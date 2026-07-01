@@ -8,10 +8,10 @@ Key-A** slot intended for external memory cards, and STMicroelectronics ships a
 matching add-on: the **B_M2MEM_PACK1** serial-memory pack. It wasn't supported
 in Zephyr yet, so I picked it up.
 
-What looked like "just add a shield" turned into a tour through Zephyr's
-devicetree modeling, a brand-new memory subsystem, and even a build break that
-had nothing to do with my hardware. This post is the story of the interesting
-parts.
+I didn't know what to expect because this was totaly new thing to me, and it 
+turned into a interesting, month long wrestling with Zephyr devicetree's, totaly
+new connector support, abstraction of vendor-specific multi line SPI's using MSPI
+Zephyr API, learning nexus-nodes etc.
 
 ## The hardware
 
@@ -34,18 +34,20 @@ carrier:
   <em>The B_M2MEM_PACK1 pack: a family of M.2 serial-memory cards (MB1927C / MB1928C) — each variant became its own shield overlay.</em>
 </p>
 
+Some of these cards are connected through QuadSPI, OctoSPI, and even HexaSPI (16 IO SPI's). ST abstracts these interfaces through XSPI interface, while NXP has FlexSPI for the similar purposes - you can catch the following problem already here I had to solve.
+
 So the real goal was to support **all variants** as distinct Zephyr *shield*
-overlays sharing one connector definition.
+overlays sharing one connector definition. 
 
 In Zephyr terms, that breaks down into three pieces:
 
-1. A **connector** definition on the board side (which SoC peripherals the M.2
-   pins map to).
-2. One **overlay per memory variant** describing the flash device on the card.
+1. **M.2 connector** - A **connector** definition on the board side (which SoC peripherals the M.2
+   connector pins map to).
+2. **Shield overlays** - One **overlay per memory variant** describing the flash device on the card.
 3. A **`shield.yml`** declaring the shield and what it provides.
 
-## The shield connector
-First thing first, I needed to add a support for this new M.2 connector. 
+## M.2 connector
+This was my first obstacle, the M.2 connector wasn't supported in Zephyr. 
 So how to do it? By working on a ZephyrRTOS contributions for a while, I noticed
 that how well you are observing patterns, is one of the most valuable skills you
 can have. I looked around, and I saw that almost every board has some shield 
