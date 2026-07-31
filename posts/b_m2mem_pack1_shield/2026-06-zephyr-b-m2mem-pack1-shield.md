@@ -25,7 +25,39 @@ In Zephyr, a shield is defined by two key characteristics:
 2. **Electrical signals** - what each pin actually does
 
 The connection between the host boards and a shield it carries is being done by Devicetree files on the board and shield sides:
-1. **Board side** - TODO: Explain from which files it consists of, what it does
+1. **Board side** - The boards side must have dedicated devicetree file (e.g. **arduino_r3_connector.dtsi**) which uses [GPIO Nexus nodes](https://docs.zephyrproject.org/latest/hardware/porting/shields.html#gpio-nexus-node). It is like an interface between SoC GPIO pins and pins on the shield itself. 
+Example: Every board that supports the arduino_r3_connector, must have a file `arduino_r3_header.dtsi` which has the `arduino_header` GPIO Nexus node which maps pins exposed on the board's SoC to the common pin-names on the interface itself. It looks like this:
+```
+arduino_header: connector {
+        compatible = "arduino-header-r3";
+        #gpio-cells = <2>;
+        gpio-map-mask = <0xffffffff 0xffffffc0>;
+        gpio-map-pass-thru = <0 0x3f>;
+        gpio-map = <0 0 &gpioa 0 0>,    /* A0 */
+                   <1 0 &gpioa 1 0>,    /* A1 */
+                   <2 0 &gpioa 4 0>,    /* A2 */
+                   <3 0 &gpiob 0 0>,    /* A3 */
+                   <4 0 &gpioc 1 0>,    /* A4 */
+                   <5 0 &gpioc 0 0>,    /* A5 */
+                   <6 0 &gpioa 3 0>,    /* D0 */
+                   <7 0 &gpioa 2 0>,    /* D1 */
+                   <8 0 &gpioa 10 0>,   /* D2 */
+                   <9 0 &gpiob 3 0>,    /* D3 */
+                   <10 0 &gpiob 5 0>,   /* D4 */
+                   <11 0 &gpiob 4 0>,   /* D5 */
+                   <12 0 &gpiob 10 0>,  /* D6 */
+                   <13 0 &gpioa 8 0>,   /* D7 */
+                   <14 0 &gpioa 9 0>,   /* D8 */
+                   <15 0 &gpioc 7 0>,   /* D9 */
+                   <16 0 &gpiob 6 0>,   /* D10 */
+                   <17 0 &gpioa 7 0>,   /* D11 */
+                   <18 0 &gpioa 6 0>,   /* D12 */
+                   <19 0 &gpioa 5 0>,   /* D13 */
+                   <20 0 &gpiob 9 0>,   /* D14 */
+                   <21 0 &gpiob 8 0>;   /* D15 */
+};
+
+```
 2. **Shield side** - TODO: Explain from which files it consists of, what it does
 
 TODO: Add example of some popular Zephyr shield
