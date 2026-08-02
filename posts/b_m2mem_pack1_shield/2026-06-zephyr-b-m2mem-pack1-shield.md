@@ -56,17 +56,62 @@ arduino_header: connector {
                    <20 0 &gpiob 9 0>,   /* D14 */
                    <21 0 &gpiob 8 0>;   /* D15 */
 };
-
 ```
-2. **Shield side** - TODO: Explain from which files it consists of, what it does
+It also defines the labels for buses exposed on the connector:
+```
+arduino_i2c: &i2c1 {};
 
-TODO: Add example of some popular Zephyr shield
+arduino_spi: &spi1 {};
+
+arduino_serial: &lpuart1 {};
+```
+
+
+2. **Shield side** - Consists of shield devicetree files, more precise:
+- **<shield_name>.overlay** - This files include the connector gpio bindings, i.e:
+```
+#include <zephyr/dt-bindings/gpio/arduino-header-r3.h>
+```
+and it can optionally define some root devicetree node which is used to define a new node, and probably define something unique to that shield (i.e. some LED's,...) which cannot be referenced by some other, existing node.
+```
+/ {
+	my_shield {
+		compatible = "vendor,my-shield";
+		status = "okay";
+	};
+};
+```
+More importantly, this file references existing nodes (defined in connector devicetree files) and adapts them to the peripherals exposed on the shield, i.e.:
+```
+&arduino_spi {
+	status = "okay";
+	cs-gpios = <&arduino_header ARDUINO_HEADER_R3_D9 GPIO_ACTIVE_LOW>;
+};
+```
+
+- **Kconfig.shield** - This file defines the Kconfig symbol for the shield
+```
+config SHIELD_<SHIELD_NAME>
+	def_bool $(shields_list_contains,shield_<shield_name>)
+```
+- **shield.yaml** - This file defines what peripherals does the shield support
+```
+shield:
+  name: <shield_name>
+  full_name: <full_shield_name>
+  vendor: <shield_vendor>
+  supported_features:
+    - <supported_features>
+```
+
 
 ## The PR workflow
-When I first got an idea to work on this PR, I didn't know the level of complexity it could gain, and that was the main thing that fed my curiosity. At the same time, I said to myself - _It's just the shield support, I have supported many boards in the past, what could be so complex about it?_ and _...but on the connector never supported before in Zephyr, which connects multiple IO XSPI protocol you never worked with..._. Nevertheless, I took the challenge, and this is how it went: 
+This PR has been a tough one, and I done it through eight commits, where every commit hronologically represents my flow of thinking, adaptations I made by respecting reviewers critics. 
 
-### 1. XSPI controller support
-Firstly, by reading the official B_M2MEM_PACK1 and NUCLEO_U3C5ZI_Q docs, I noticed that the M.2 connector is tied to **XSPI** peripheral, so I jumped to the docs and [AN5050](https://www.st.com/resource/en/application_note/an5050-getting-started-with-octospi-hexadecaspi-and-xspi-interface-on-stm32-mcus-stmicroelectronics.pdf) had all answers I needed. Long story short, the **XSPI** - e**X**tended **S**erial **P**eripheral **I**nterface, is the new interface that responds to the growing demand for faster, bigger external memories, triggered by richer graphics, wider range of multimedia and data-intensive applications in embedded systems, which require higher data throughputs and extra demands on the limited on-chip MCU memory. The XSPI is a flexible interface which can be configured as:
+### 1. XSPI controller support 
+Commit: *dts: arm: st: stm32u3: add XSPI controller support* (74fba4a)
+
+Firstly, by reading the official B_M2MEM_PACK1 and NUCLEO_U3C5ZI_Q docs, I noticed that the M.2 connector is tied to **XSPI** peripheral, so I jumped to the docs and [AN5050](https://www.st.com/resource/en/application_note/an5050-getting-started-with-octospi-hexadecaspi-and-xspi-interface-on-stm32-mcus-stmicroelectronics.pdf) had all answers I needed. Long story short, the **XSPI** - e**X**tended **S**erial **P**eripheral **I**nterface, is the new interface that responds to the growing demand for faster, bigger external memories, needed by richer graphics, wider range of multimedia and data-intensive applications in embedded systems, which require higher data throughputs and extra demands on the limited on-chip MCU memory. It is a flexible interface which can be configured as:
 
  1. **SPI** for 1-line data transmission
  2. **Dual-SPI** for 2-line data transmission
@@ -107,6 +152,27 @@ means the child is written as a xspi-nor-flash@0 where 0 is the chip-select inde
 - **status = "disabled"** - The node initializes in a disabled state.
 
 ### 2. M.2 connector support
-As mentioned earlier, the B_M2MEM_PACK1 attaches to Nucleo boards through an M.2 Key A connector. A shield is only portable if the connector it plugs into is described once, centrally, and then reused by every board that carries it. So before writing anything shield-related, I had to define the connector.
+Commit: *dts: bindings: gpio: add ST M2 memory connector binding* (698ceed)
+
+As mentioned earlier, the B-M2MEM-PACK1 attaches to Nucleo boards through an M.2 Key A connector. A shield is only portable if the connector it plugs into is described once, centrally, and then reused by every board that exposes it. Therefore, before implementing the shield itself, I first had to add support for the connector.
+
+In Zephyr, connectors are described using two main components - **binding** and **header for pin macros**. This is what I implemented for M.2 memory connector:
+1. **Binding** -  `dts/bindings/gpio/st,m2-memory-connector.yaml` - Defines the connector type and its devicetree representation as a GPIO nexus, and defines how GPIO specifiers `pin`, `flags` are interpreted.
+2. **Header for pin macros** - `include/zephyr/dt-bindings/gpio/m2-memory-connector.h` - Defines connector pins, like:
+```
+...
+#define M2MEM_CONNECTOR_GPIO_SPI_SCK  16 /**< Optional auxiliary SPI clock */
+#define M2MEM_CONNECTOR_GPIO_SPI_MOSI 17 /**< Optional auxiliary SPI controller-out */
+#define M2MEM_CONNECTOR_GPIO_LDO_EN   18 /**< Mandatory open-drain LDO enable */
+#define M2MEM_CONNECTOR_GPIO_SPI_MISO 19 /**< Optional auxiliary SPI controller-in */
+...
+```
+,where some shield that uses this connector can include this file in shield overlay file and reference this pins to a physical pins exposed on the shield itself. (**b_m2mem_pack1** shield in this case).
+
+## 3. Board side connector definition
+Commit: *boards: st: nucleo_u3c5zi_q: add M2 memory connector support* (1db9c2a)
+
+This is actually the important one. 
+
 
 TODO: Explain every commit by respecting hronology - feed the MSPI plot, and provide concrete reasons of the migration to MSPI API (Give detailed explanation of reg limitations that are being solved with MSPI) 
