@@ -1,4 +1,4 @@
-# My journey into open-source world
+# My journey into open-source
 
 Welcome to the _behind the scenes_ view of my open-source contributions. Here you can read about the mistakes I made, what I figured out after correcting them and the knowledge I gained from my reviewers.
 
