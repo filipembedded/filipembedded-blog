@@ -215,6 +215,74 @@ Here the actual shield-related files are added:
       };
     ```
 
+## 5. Legacy STM32 XSPI driver JEDEC ID fix
+Commit: *drivers: flash: stm32_xspi: guard jedec_id init with JESD216_API* (80550a0)
+
+While building the `spi_flash` sample against the shield, I hit this error: `error: 'struct flash_stm32_xspi_data' has no member named 'jedec_id'`
+
+The legacy driver initialized `.jedec_id` whenever the devicetree node had a `jedec-id` property. The field itself only exists when `CONFIG_FLASH_JESD216_API` is enabled, and `spi_flash` doesn't enable it. The fix guards the initializer with the same Kconfig option:
+
+*drivers/flash/flash_stm32_xspi.c*
+```diff
+ 		.page_size = SPI_NOR_PAGE_SIZE, /* by default, to be updated by sfdp */
+-		IF_ENABLED(DT_INST_NODE_HAS_PROP(inst, jedec_id), (
+-			.jedec_id = DT_INST_PROP(inst, jedec_id),
+-		))
++		IF_ENABLED(DT_INST_NODE_HAS_PROP(inst, jedec_id), (
++			IF_ENABLED(CONFIG_FLASH_JESD216_API,
++				(.jedec_id = DT_INST_PROP(inst, jedec_id),))
++		))
+ 
+ 		XSPI_DMA_CHANNEL(STM32_XSPI_NODE(inst), tx, TX, MEMORY, PERIPHERAL)
+```
+
+This fixed the build issues I have faced and at a first glance it looked like a finished PR. Even though the flash samples built for all shield variants, a maintainers noticed the major problem with this implementation. 
+
+During review, [@FRASTM](https://github.com/FRASTM) and [@erwango](https://github.com/erwango) pointed at this line in the shield overlay:
+```
+ranges = <0x00 0x90000000 DT_SIZE(32)>
+```
+
+`0x90000000` is the base address for the XSPI memory-mapped window, and it depends on the STM32 series. A shield is supposed to be portable, so it shouldn't contain a SoC-specific address. The hard-coded address ended here because of how the legacy XSPI driver models devicetree. The XSPI node has `#size-cells = <0>`, so it's child nodes need to be addressed only by chip select. As a result, `ranges` can't be defined at a controller level (at the SoC-level devicetrees), where the window logically belongs, and has to be repeated in every flash node. The window is already defined once in the SoC dtsi, as the controller's second entry:
+
+```
+xspi1: spi@420d1400 {
+	reg = <0x420d1400 0x400>, <0x90000000 DT_SIZE_M(256)>;
+	...
+};
+```
+Just the legacy XSPI driver didn't have the solution to obtain that entry. 
+
+
+This is the moment [@erwango](https://github.com/erwango) suggested [MSPI](https://docs.zephyrproject.org/latest/hardware/peripherals/mspi.html) as a solution for this problem, and gave me the hint that legacy STM32 QSPI, OSPI and XSPI drivers will be replaced with MSPI in the future Zephyr releases. The STM32 MSPI driver reads the memory-map base directly from `reg[1]`, so with MSPI the shield doesn't need to know about address at all. This was enough for me to start migration to the MSPI.
+
+## 6. Convert the STM32U3 SoC XSPI node to MSPI controller
+Commit: *dts: arm: st: stm32u3: convert SoC XSPI node to MSPI controller* (9919173)
+
+Here I got little bit lucky as this SoC is a newer one and only had one board that used it - nucleo_u3c5zi_q, the exact one I have worked on. This allowed me to start this from the root XSPI node (`xspi1: spi@420d1400`), and convert it to MSPI easily because I didn't have much users(boards) that would possibly be affected with this change.
+
+
+With this changes, the xspi1 node has been converted from legacy to MSPI driver:
+
+*dts/arm/st/u3/stm32u3.dtsi*
+```diff
+ xspi1: spi@420d1400 {
+-	compatible = "st,stm32-xspi";
++	compatible = "st,stm32-xspi-controller";
+ 	reg = <0x420d1400 0x400>, <0x90000000 DT_SIZE_M(256)>;
+ 	interrupts = <76 0>;
+ 	clock-names = "xspix", "xspi-ker";
+ 	clocks = <&rcc STM32_CLOCK(AHB2_2, 4)>,
+ 		 <&rcc STM32_SRC_SYSCLK OCTOSPI_SEL(0)>;
++	clock-frequency = <DT_FREQ_M(50)>;
++	op-mode = "MSPI_OP_MODE_CONTROLLER";
+ 	#address-cells = <1>;
+ 	#size-cells = <0>;
+ 	status = "disabled";
+ };
+```
+
+
 ------------------------------------------------------------------------------------------------------------
 TODO: Explain every commit by respecting hronology - feed the MSPI plot, and provide concrete reasons of the migration to MSPI API (Give detailed explanation of reg limitations that are being solved with MSPI) 
 ------------------------------------------------------------------------------------------------------------
