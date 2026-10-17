@@ -172,7 +172,49 @@ In Zephyr, connectors are described using two main components - **binding** and 
 ## 3. Board side connector definition
 Commit: *boards: st: nucleo_u3c5zi_q: add M2 memory connector support* (1db9c2a)
 
-This is actually the important one. 
+This commit introduced the `m2_memory_connector.dtsi` which is used to describe the M.2 connector on the **nucleo_u3c5zi_q** board - it defines the connections between GPIO pins on the board and pins on actual M.2 connector. It is adapted to the **nucleo_u3c5zi_q** pinout and respects the **m2-memory-connector binding**.
 
+## 4. B_M2MEM_PACK1 shield
+Commit: *boardsL shields: add ST B-M2MEM-PACK1 support*
 
+Here the actual shield-related files are added: 
+  - doc files (a picture and `index.rst` file describing shield features)
+  - common `b_m2mem_pack1_common.dtsi` which defines the features populated on all shield variants (`m2mem-leds` node which describe the 2 LED's and `m2mem_id_eeprom` node which is child node to `m2mem_i2c` parent, and describes the I2C identification EEPROM memory which is used to identify the populated memories on the shield variants)
+  - variant-specific overlay files - `b_m2mem_pack1_*.overlay` - One overlay per variant. Includes common .dtsi file and defines the child devicetree node under `m2mem_xspi` parent node.
+    At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet bellow describes the dereferenced `m2mem_xspi` node and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
+
+    *boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_18ba.overlay* 
+    ```
+
+      &m2mem_xspi {
+    	  status = "okay";
+
+      	mx25uw25645: xspi-nor-flash@0 {
+      		compatible = "st,stm32-xspi-nor";
+      		reg = <0>;
+      		size = <DT_SIZE_M(256)>; /* 256 Mbits */
+      		ospi-max-frequency = <DT_FREQ_M(50)>;
+      		spi-bus-width = <XSPI_OCTO_MODE>;
+      		data-rate = <XSPI_DTR_TRANSFER>;
+      		reset-gpios = <&m2mem_ldo_en M2MEM_CONNECTOR_GPIO_LDO_EN GPIO_ACTIVE_LOW>;
+      		reset-gpios-duration = <1>;
+      		four-byte-opcodes;
+      		status = "okay";
+
+      		#address-cells = <1>;
+      		#size-cells = <1>;
+      		ranges = <0x0 0x90000000 DT_SIZE_M(32)>;
+
+      		m2mem_flash0: flash@0 {
+      			compatible = "soc-nv-flash";
+      			reg = <0x0 DT_SIZE_M(32)>;
+      			erase-block-size = <DT_SIZE_K(4)>;
+      			write-block-size = <1>;
+      		};
+      	};
+      };
+    ```
+
+------------------------------------------------------------------------------------------------------------
 TODO: Explain every commit by respecting hronology - feed the MSPI plot, and provide concrete reasons of the migration to MSPI API (Give detailed explanation of reg limitations that are being solved with MSPI) 
+------------------------------------------------------------------------------------------------------------
