@@ -2,7 +2,7 @@
 - [PR #109004](https://github.com/zephyrproject-rtos/zephyr/pull/109004), merged **24.06.2026**.
 
 ## Intro
-After I added upstream support for [STM32U3C5 SoC and NUCLEO-U3C5ZI-Q board](https://github.com/zephyrproject-rtos/zephyr/pull/105503), I observed the board and I got the idea to make one more contribution for it. I noticed that this board has a M.2 Key-A slot at the bottom side, and it spiked my curiosity.
+After I added upstream support for [STM32U3C5 SoC and NUCLEO-U3C5ZI-Q board](https://github.com/zephyrproject-rtos/zephyr/pull/105503), I observed the board and I got the idea to make one more contribution for it. I noticed that this board has a M.2 Key-A slot at the bottom side, and it sparked my curiosity.
 After some research, I found out the intention behind this slot - the [B_M2MEM_PACK1](https://www.st.com/en/evaluation-tools/b-m2mem-pack1.html) shield.
 <p align="center">
   <img src=".docs/nucleo_u3c5zi_q_M.2.jpeg" alt="NUCLEO-U3C5ZI-Q top and bottom view; the M.2 Key-A connector is highlighted on the underside of the board." width="760">
@@ -68,7 +68,7 @@ arduino_serial: &lpuart1 {};
 
 
 2. **Shield side** - Consists of shield devicetree files, more precise:
-- **<shield_name>.overlay** - This files include the connector gpio bindings, i.e:
+- **<shield_name>.overlay** - This file includes the connector gpio bindings, i.e:
 ```
 #include <zephyr/dt-bindings/gpio/arduino-header-r3.h>
 ```
@@ -106,7 +106,7 @@ shield:
 
 
 ## The PR workflow
-This PR has been a tough one, and I done it through eight commits, where every commit hronologically represents my flow of thinking and adaptations I made by respecting reviewers critics. 
+This PR has been a tough one, and I did it through eight commits, where every commit chronologically represents my flow of thinking and adaptations I made by respecting reviewers' feedback. 
 
 ### 1. XSPI controller support 
 Commit: *dts: arm: st: stm32u3: add XSPI controller support* (74fba4a)
@@ -134,7 +134,7 @@ I checked out the SoC devicetree files, and there wasn't XSPI node at all, I did
 		};
 ```
 where:
-- **xspi1** is the nodelabel of the spi node, but on the internal SoC address where XSPI1 peripheral begins `0x420d1400` - **unit address**
+- **xspi1** is the node label, and `spi@420d1400` is the node name, where `0x420d1400` is the **unit address** - the address in the SoC memory map where the XSPI1 peripheral registers begin
 - **compatible** property describes which bindings will be used for this node - in short, which driver will be used for this node
 - **reg** property has two address windows, first one is the **register block** - `<0x420d1400 0x400>` where first address matches unit address, and second one represents size of the register space; Second address window represents predefined address space reserved for **memory-mapped** mode, start address of the memory-mapped region is `0x90000000` and size of that region can be maximally 256MB (This is the maximal size of the external memory we can do memory-mapping with, limitation of address space) 
 _! Note that we will have problem later on with this !_ 
@@ -181,7 +181,7 @@ Here the actual shield-related files are added:
   - doc files (a picture and `index.rst` file describing shield features)
   - common `b_m2mem_pack1_common.dtsi` which defines the features populated on all shield variants (`m2mem-leds` node which describe the 2 LED's and `m2mem_id_eeprom` node which is child node to `m2mem_i2c` parent, and describes the I2C identification EEPROM memory which is used to identify the populated memories on the shield variants)
   - variant-specific overlay files - `b_m2mem_pack1_*.overlay` - One overlay per variant. Includes common .dtsi file and defines the child devicetree node under `m2mem_xspi` parent node.
-    At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet bellow describes the dereferenced `m2mem_xspi` node and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
+    At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet below describes the dereferenced `m2mem_xspi` node and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
 
     *boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_18ba.overlay* 
     ```
@@ -236,14 +236,14 @@ The legacy driver initialized `.jedec_id` whenever the devicetree node had a `je
  		XSPI_DMA_CHANNEL(STM32_XSPI_NODE(inst), tx, TX, MEMORY, PERIPHERAL)
 ```
 
-This fixed the build issues I have faced and at a first glance it looked like a finished PR. Even though the flash samples built for all shield variants, a maintainers noticed the major problem with this implementation. 
+This fixed the build issues I have faced and at a first glance it looked like a finished PR. Even though the flash samples built for all shield variants, the maintainers noticed a major problem with this implementation. 
 
 During review, [@FRASTM](https://github.com/FRASTM) and [@erwango](https://github.com/erwango) pointed at this line in the shield overlay:
 ```
 ranges = <0x00 0x90000000 DT_SIZE(32)>
 ```
 
-`0x90000000` is the base address for the XSPI memory-mapped window, and it depends on the STM32 series. A shield is supposed to be portable, so it shouldn't contain a SoC-specific address. The hard-coded address ended here because of how the legacy XSPI driver models devicetree. The XSPI node has `#size-cells = <0>`, so it's child nodes need to be addressed only by chip select. As a result, `ranges` can't be defined at a controller level (at the SoC-level devicetrees), where the window logically belongs, and has to be repeated in every flash node. The window is already defined once in the SoC dtsi, as the controller's second entry:
+`0x90000000` is the base address for the XSPI memory-mapped window, and it depends on the STM32 series. A shield is supposed to be portable, so it shouldn't contain a SoC-specific address. The hard-coded address ended here because of how the legacy XSPI driver models devicetree. The XSPI node has `#size-cells = <0>`, so its child nodes need to be addressed only by chip select. As a result, `ranges` can't be defined at a controller level (at the SoC-level devicetrees), where the window logically belongs, and has to be repeated in every flash node. The window is already defined once in the SoC dtsi, as the controller's second entry:
 
 ```
 xspi1: spi@420d1400 {
@@ -259,10 +259,10 @@ This is the moment [@erwango](https://github.com/erwango) suggested [MSPI](https
 ### 6. Convert the STM32U3 SoC XSPI node to MSPI controller
 Commit: *dts: arm: st: stm32u3: convert SoC XSPI node to MSPI controller* (9919173)
 
-At the time the STM32U3 was a fairly new SoC, and at the time only one board in Zephyr used it: the nucleo_u3c5zi_q, the same board I was working on. That meant I could start the migration from the root XSPI node (xspi1: spi@420d1400) and switch it to MSPI directly, without worrying about breaking other boards that depend on it.
+At the time, the STM32U3 was a fairly new SoC, and only one board in Zephyr used it: the nucleo_u3c5zi_q, the same board I was working on. That meant I could start the migration from the root XSPI node (xspi1: spi@420d1400) and switch it to MSPI directly, without worrying about breaking other boards that depend on it.
 
 
-With this changes, the xspi1 node has been converted from legacy to MSPI driver:
+With these changes, the xspi1 node has been converted from legacy to MSPI driver:
 
 *dts/arm/st/u3/stm32u3.dtsi*
 ```diff
