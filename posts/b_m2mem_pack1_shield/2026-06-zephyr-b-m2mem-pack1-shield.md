@@ -10,7 +10,7 @@ After some research, I found out the intention behind this slot - the [B_M2MEM_P
   <em>The M.2 Key-A connector (highlighted) on the underside of the NUCLEO-U3C5ZI-Q, routed to the SoC's XSPI bus.</em>
 </p>
 
-## What is B_M2MEM_PACK1 shield?
+## What is a B_M2MEM_PACK1 shield?
 This shield is a pack of five different non-volatile serial memory cards by STMicroelectronics. These cards contain serial flash memories from different memory vendors and offer multiple serial bus schemes and memory interfaces.
 
 <p align="center">
@@ -106,7 +106,7 @@ shield:
 
 
 ## The PR workflow
-This PR has been a tough one, and I done it through eight commits, where every commit hronologically represents my flow of thinking, adaptations I made by respecting reviewers critics. 
+This PR has been a tough one, and I done it through eight commits, where every commit hronologically represents my flow of thinking and adaptations I made by respecting reviewers critics. 
 
 ### 1. XSPI controller support 
 Commit: *dts: arm: st: stm32u3: add XSPI controller support* (74fba4a)
@@ -169,12 +169,12 @@ In Zephyr, connectors are described using two main components - **binding** and 
 ```
 ,where some shield that uses this connector can include this file in shield overlay file and reference this pins to a physical pins exposed on the shield itself. (**b_m2mem_pack1** shield in this case).
 
-## 3. Board side connector definition
+### 3. Board side connector definition
 Commit: *boards: st: nucleo_u3c5zi_q: add M2 memory connector support* (1db9c2a)
 
 This commit introduced the `m2_memory_connector.dtsi` which is used to describe the M.2 connector on the **nucleo_u3c5zi_q** board - it defines the connections between GPIO pins on the board and pins on actual M.2 connector. It is adapted to the **nucleo_u3c5zi_q** pinout and respects the **m2-memory-connector binding**.
 
-## 4. B_M2MEM_PACK1 shield
+### 4. B_M2MEM_PACK1 shield
 Commit: *boardsL shields: add ST B-M2MEM-PACK1 support*
 
 Here the actual shield-related files are added: 
@@ -215,7 +215,7 @@ Here the actual shield-related files are added:
       };
     ```
 
-## 5. Legacy STM32 XSPI driver JEDEC ID fix
+### 5. Legacy STM32 XSPI driver JEDEC ID fix
 Commit: *drivers: flash: stm32_xspi: guard jedec_id init with JESD216_API* (80550a0)
 
 While building the `spi_flash` sample against the shield, I hit this error: `error: 'struct flash_stm32_xspi_data' has no member named 'jedec_id'`
@@ -256,10 +256,10 @@ Just the legacy XSPI driver didn't have the solution to obtain that entry.
 
 This is the moment [@erwango](https://github.com/erwango) suggested [MSPI](https://docs.zephyrproject.org/latest/hardware/peripherals/mspi.html) as a solution for this problem, and gave me the hint that legacy STM32 QSPI, OSPI and XSPI drivers will be replaced with MSPI in the future Zephyr releases. The STM32 MSPI driver reads the memory-map base directly from `reg[1]`, so with MSPI the shield doesn't need to know about address at all. This was enough for me to start migration to the MSPI.
 
-## 6. Convert the STM32U3 SoC XSPI node to MSPI controller
+### 6. Convert the STM32U3 SoC XSPI node to MSPI controller
 Commit: *dts: arm: st: stm32u3: convert SoC XSPI node to MSPI controller* (9919173)
 
-Here I got little bit lucky as this SoC is a newer one and only had one board that used it - nucleo_u3c5zi_q, the exact one I have worked on. This allowed me to start this from the root XSPI node (`xspi1: spi@420d1400`), and convert it to MSPI easily because I didn't have much users(boards) that would possibly be affected with this change.
+At the time the STM32U3 was a fairly new SoC, and at the time only one board in Zephyr used it: the nucleo_u3c5zi_q, the same board I was working on. That meant I could start the migration from the root XSPI node (xspi1: spi@420d1400) and switch it to MSPI directly, without worrying about breaking other boards that depend on it.
 
 
 With this changes, the xspi1 node has been converted from legacy to MSPI driver:
@@ -282,7 +282,65 @@ With this changes, the xspi1 node has been converted from legacy to MSPI driver:
  };
 ```
 
+### 7. Convert the shield overlays to MSPI
+Commit: *boards: shields: st_b_m2mem_pack1: migrate to MSPI* (5dc71b8)
 
-------------------------------------------------------------------------------------------------------------
-TODO: Explain every commit by respecting hronology - feed the MSPI plot, and provide concrete reasons of the migration to MSPI API (Give detailed explanation of reg limitations that are being solved with MSPI) 
-------------------------------------------------------------------------------------------------------------
+With the controller converted, the shield overlays could follow. Every NOR variant moved from the legacy `st,stm32-xspi-nor` binding to the generic `jedec,mspi-nor`. The diff below shows one of the shield variants - `mb1927_33ba` (Macronix MX25LM51245):
+
+*boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_33ba.overlay*
+```diff
+-	mx25lm51245: xspi-nor-flash@0 {
+-		compatible = "st,stm32-xspi-nor";
++	m2mem_flash: mx25lm51245: mspi-nor-flash@0 {
++		compatible = "mxicy,mx25u", "jedec,mspi-nor";
+ 		reg = <0>;
+ 		size = <DT_SIZE_M(512)>; /* 512 Mbits */
+-		ospi-max-frequency = <DT_FREQ_M(50)>;
+-		spi-bus-width = <XSPI_OCTO_MODE>;
+-		data-rate = <XSPI_DTR_TRANSFER>;
+ ...
+-		#address-cells = <1>;
+-		#size-cells = <1>;
+-		ranges = <0x0 0x90000000 DT_SIZE_M(64)>;
++		mspi-max-frequency = <DT_FREQ_M(50)>;
++		mspi-io-mode = "MSPI_IO_MODE_OCTAL";
++		mspi-data-rate = "MSPI_DATA_RATE_SINGLE";
++		mspi-hardware-ce-num = <0>;
++
++		read-command = <0xec13>;
++		write-command = <0x12ed>;
++		command-length = "INSTR_2_BYTE";
++		rx-dummy = <20>;
+```
+
+The most important change is the line that is gone: `ranges = <0x0 0x90000000 ...>`. The shield no longer contains any SoC-specific address, because the MSPI driver takes the memory-map base from the controller's `reg[1]`.
+
+A few other changes came with the migration:
+- **Stable `m2mem_flash` label**: every variant exposes its flash under the same label, so a sample can use `flash0 = &m2mem_flash;` without knowing which memory is populated.
+- **`mspi_flash` sample overlay** for `nucleo_u3c5zi_q`, built on that label.
+- **Dropped the `mb1928_18la` variant**: its M95P32 is a page EEPROM (512-byte pages, non-standard page-program opcode) rather than a regular NOR flash and needs the dedicated driver for itself. 
+
+### 8. Add shield scenarios to the mspi_flash sample
+Commit: *samples: drivers: mspi_flash: add B_M2MEM_PACK1 shield scenarios* (e5da174)
+
+The `nucleo_u3c5zi_q` has no external flash of its own, so the existing `mspi_flash` scenario filters it out. To get the shield covered by CI and Twister, I added one scenario per variant. Each scenario passes the shield through `extra_args`:
+
+*samples/drivers/mspi/mspi_flash/sample.yaml*
+```yaml
+  sample.drivers.mspi.flash.b_m2mem_pack1_mb1927_33ba:
+    tags:
+      - shield
+    platform_allow:
+      - nucleo_u3c5zi_q
+    integration_platforms:
+      - nucleo_u3c5zi_q
+    extra_args: SHIELD=b_m2mem_pack1_mb1927_33ba
+```
+
+To keep the expected console output defined only once, I moved the shared `tags` and the console `harness_config` from the original scenario into the `common` section. The existing platform scenario and the four new shield scenarios now validate against the same erase/write/read sequence.
+
+To build the sample for a specific variant (e.g. mb1927_33ba), pass the matching shield name to `west build`:
+
+```
+west build -b nucleo_u3c5zi_q samples/drivers/mspi/mspi_flash --shield b_m2mem_pack1_mb1927_33ba
+```
