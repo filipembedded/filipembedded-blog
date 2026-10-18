@@ -173,7 +173,82 @@ In Zephyr, connectors are described using two main components - **binding** and 
 ### 3. Board side connector definition
 Commit: [*boards: st: nucleo_u3c5zi_q: add M2 memory connector support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/1db9c2a6be13467cccc808e19204cbe75853e1ec)
 
-This commit introduced the `m2_memory_connector.dtsi` which is used to describe the M.2 connector on the **nucleo_u3c5zi_q** board - it defines the connections between GPIO pins on the board and pins on actual M.2 connector. It is adapted to the **nucleo_u3c5zi_q** pinout and respects the **m2-memory-connector binding**.
+This commit connects the generic M.2 connector from the previous commit to the real pins of the **nucleo_u3c5zi_q**. It adds a new file, `m2_memory_connector.dtsi`, and includes it from the board's main `.dts`, next to the existing `arduino_r3_connector.dtsi`.
+
+The core of the file is the `m2mem_connector` GPIO nexus node. Each line maps a connector pin from `m2-memory-connector.h` to an actual SoC GPIO. The file also defines labels for the buses routed to the connector and for the LDO enable line:
+
+*boards/st/nucleo_u3c5zi_q/m2_memory_connector.dtsi*
+```dts
+m2mem_connector: m2mem-connector {
+	compatible = "st,m2-memory-connector";
+	#gpio-cells = <2>;
+	gpio-map-mask = <0xffffffff 0xffffffc0>;
+	gpio-map-pass-thru = <0 GPIO_DT_FLAGS_MASK>;
+	gpio-map = <M2MEM_CONNECTOR_GPIO_SPI_SCK 0 &gpioa 5 0>,
+		   <M2MEM_CONNECTOR_GPIO_SPI_MOSI 0 &gpioa 7 0>,
+		   <M2MEM_CONNECTOR_GPIO_LDO_EN 0 &gpiod 4 0>,
+		   <M2MEM_CONNECTOR_GPIO_SPI_MISO 0 &gpioa 6 0>,
+		   <M2MEM_CONNECTOR_GPIO_SPI_NSS 0 &gpiod 6 0>,
+		   <M2MEM_CONNECTOR_XSPI_NCS1 0 &gpiog 12 0>,
+		   <M2MEM_CONNECTOR_XSPI_DQS0 0 &gpiog 15 0>,
+		   <M2MEM_CONNECTOR_XSPI_D6 0 &gpiog 9 0>,
+		   <M2MEM_CONNECTOR_XSPI_D7 0 &gpiog 10 0>,
+		   <M2MEM_CONNECTOR_XSPI_D5 0 &gpiog 6 0>,
+		   <M2MEM_CONNECTOR_XSPI_D4 0 &gpiog 3 0>,
+		   <M2MEM_CONNECTOR_XSPI_D3 0 &gpiog 2 0>,
+		   <M2MEM_CONNECTOR_XSPI_D2 0 &gpiog 8 0>,
+		   <M2MEM_CONNECTOR_XSPI_D1 0 &gpiog 5 0>,
+		   <M2MEM_CONNECTOR_XSPI_D0 0 &gpiog 4 0>,
+		   <M2MEM_CONNECTOR_LED2 0 &gpiof 11 0>,
+		   <M2MEM_CONNECTOR_INT1 0 &gpiof 15 0>,
+		   <M2MEM_CONNECTOR_XSPI_CLK1 0 &gpiog 13 0>,
+		   <M2MEM_CONNECTOR_LED1 0 &gpiof 10 0>,
+		   <M2MEM_CONNECTOR_XSPI_NCLK1 0 &gpiog 14 0>,
+		   <M2MEM_CONNECTOR_I2C_SDA 0 &gpiob 7 0>,
+		   <M2MEM_CONNECTOR_I2C_SCL 0 &gpiob 6 0>,
+		   <M2MEM_CONNECTOR_INT2 0 &gpiof 14 0>;
+};
+
+m2mem_i2c: &i2c1 {};
+
+m2mem_xspi: &xspi1 {};
+
+m2mem_ldo_en: &m2mem_connector {};
+```
+
+Because of this mapping, the shield never needs to know which GPIO port the LDO enable is on. It writes `<&m2mem_ldo_en M2MEM_CONNECTOR_GPIO_LDO_EN ...>`, and the board resolves that to `PD4`. In the same way, the shield only uses `m2mem_i2c` and `m2mem_xspi`, never `i2c1` or `xspi1` directly. Another board with the same connector can route it to a different I2C or XSPI instance, and the shield overlays still work without any change.
+
+The bus labels only point to the SoC instances. The pins those instances actually use are alternate-function pins, selected with `pinctrl` in the board `.dts`. They match the I2C and XSPI entries in `gpio-map` above, and all XSPI lines are routed to port G:
+
+*boards/st/nucleo_u3c5zi_q/nucleo_u3c5zi_q.dts*
+```dts
+&i2c1 {
+	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
+	pinctrl-names = "default";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+};
+
+&xspi1 {
+	pinctrl-0 = <&octospi1_clk_pg13 &octospi1_ncs_pg12
+		     &octospi1_io0_pg4 &octospi1_io1_pg5
+		     &octospi1_io2_pg8 &octospi1_io3_pg2
+		     &octospi1_io4_pg3 &octospi1_io5_pg6
+		     &octospi1_io6_pg9 &octospi1_io7_pg10
+		     &octospi1_dqs_pg15 &octospi1_nclk_pg14>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+```
+
+This commit also fixed an earlier mistake of mine. During review, [@erwango](https://github.com/erwango) asked whether the connector's I2C mapping was compatible with the Arduino header. Checking the board user manual (UM3599, Table 14), I found that my *original* board-support PR had mapped I2C1 to the wrong pins:
+
+```diff
+ &i2c1 {
+-	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
++	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
+ 	pinctrl-names = "default";
+```
 
 ### 4. B_M2MEM_PACK1 shield
 Commit: [*boards: shields: add ST B-M2MEM-PACK1 support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/a6fcde70be1f27ab8f5d4b68b3d75ca0d5a2a66d)
