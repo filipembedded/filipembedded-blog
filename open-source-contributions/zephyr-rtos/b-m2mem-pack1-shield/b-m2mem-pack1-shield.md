@@ -1,0 +1,518 @@
+# Adding B_M2MEM_PACK1 shield support to Zephyr
+- [PR #109004](https://github.com/zephyrproject-rtos/zephyr/pull/109004), merged **24.06.2026**.
+
+## Intro
+After I added upstream support for [STM32U3C5 SoC and NUCLEO-U3C5ZI-Q board](https://github.com/zephyrproject-rtos/zephyr/pull/105503), I took a closer look at the board and got the idea to make one more contribution for it. I noticed that this board has a M.2 Key-A slot at the bottom side, and it sparked my curiosity.
+After some research, I found out the intention behind this slot - the [B_M2MEM_PACK1](https://www.st.com/en/evaluation-tools/b-m2mem-pack1.html) shield.
+<p align="center">
+  <img src=".docs/nucleo_u3c5zi_q_M.2.jpeg" alt="NUCLEO-U3C5ZI-Q top and bottom view; the M.2 Key-A connector is highlighted on the underside of the board." width="760">
+  <br>
+  <em>The M.2 Key-A connector (highlighted) on the underside of the NUCLEO-U3C5ZI-Q, routed to the SoC's XSPI bus.</em>
+</p>
+
+## What is a B_M2MEM_PACK1 shield?
+This shield is a pack of five different non-volatile serial memory cards by STMicroelectronics. These cards contain serial flash memories from different memory vendors and offer multiple serial bus schemes and memory interfaces.
+
+<p align="center">
+  <img src=".docs/b_m2mem_pack1.webp" alt="The five B_M2MEM_PACK1 M.2 serial-memory cards (MB1927C and MB1928C variants) fanned out." width="560">
+  <br>
+  <em>The B_M2MEM_PACK1 pack: a family of M.2 serial-memory cards (MB1927C / MB1928C) - each variant became its own shield overlay.</em>
+</p>
+
+## Zephyr shields - short recap
+In Zephyr, a shield is defined by two key characteristics:
+1. **Physical connectors** - the mechanical interface
+2. **Electrical signals** - what each pin actually does
+
+The connection between the host boards and a shield it carries is being done by Devicetree files on the board and shield sides:
+1. **Board side** - The boards side must have dedicated devicetree file (e.g. **arduino_r3_connector.dtsi**) which uses [GPIO Nexus nodes](https://docs.zephyrproject.org/latest/hardware/porting/shields.html#gpio-nexus-node). It is like an interface between SoC GPIO pins and pins on the shield itself. 
+Example: Every board that supports the arduino_r3_connector, must have a file `arduino_r3_connector.dtsi` which has the `arduino_header` GPIO Nexus node which maps pins exposed on the board's SoC to the common pin-names on the interface itself. It looks like this:
+```dts
+arduino_header: connector {
+        compatible = "arduino-header-r3";
+        #gpio-cells = <2>;
+        gpio-map-mask = <0xffffffff 0xffffffc0>;
+        gpio-map-pass-thru = <0 0x3f>;
+        gpio-map = <0 0 &gpioa 0 0>,    /* A0 */
+                   <1 0 &gpioa 1 0>,    /* A1 */
+                   <2 0 &gpioa 4 0>,    /* A2 */
+                   <3 0 &gpiob 0 0>,    /* A3 */
+                   <4 0 &gpioc 1 0>,    /* A4 */
+                   <5 0 &gpioc 0 0>,    /* A5 */
+                   <6 0 &gpioa 3 0>,    /* D0 */
+                   <7 0 &gpioa 2 0>,    /* D1 */
+                   <8 0 &gpioa 10 0>,   /* D2 */
+                   <9 0 &gpiob 3 0>,    /* D3 */
+                   <10 0 &gpiob 5 0>,   /* D4 */
+                   <11 0 &gpiob 4 0>,   /* D5 */
+                   <12 0 &gpiob 10 0>,  /* D6 */
+                   <13 0 &gpioa 8 0>,   /* D7 */
+                   <14 0 &gpioa 9 0>,   /* D8 */
+                   <15 0 &gpioc 7 0>,   /* D9 */
+                   <16 0 &gpiob 6 0>,   /* D10 */
+                   <17 0 &gpioa 7 0>,   /* D11 */
+                   <18 0 &gpioa 6 0>,   /* D12 */
+                   <19 0 &gpioa 5 0>,   /* D13 */
+                   <20 0 &gpiob 9 0>,   /* D14 */
+                   <21 0 &gpiob 8 0>;   /* D15 */
+};
+```
+It also defines the labels for buses exposed on the connector:
+```dts
+arduino_i2c: &i2c1 {};
+
+arduino_spi: &spi1 {};
+
+arduino_serial: &lpuart1 {};
+```
+
+
+2. **Shield side** - Consists of shield devicetree files, more precise:
+- **<shield_name>.overlay** - This file includes the connector gpio bindings, e.g.:
+```dts
+#include <zephyr/dt-bindings/gpio/arduino-header-r3.h>
+```
+and it can optionally define some root devicetree node which is used to define a new node, and probably define something unique to that shield (e.g. some LED's,...) which cannot be referenced by some other, existing node.
+```dts
+/ {
+	my_shield {
+		compatible = "vendor,my-shield";
+		status = "okay";
+	};
+};
+```
+More importantly, this file references existing nodes (defined in connector devicetree files) and adapts them to the peripherals exposed on the shield, e.g.:
+```dts
+&arduino_spi {
+	status = "okay";
+	cs-gpios = <&arduino_header ARDUINO_HEADER_R3_D9 GPIO_ACTIVE_LOW>;
+};
+```
+
+- **Kconfig.shield** - This file defines the Kconfig symbol for the shield
+```kconfig
+config SHIELD_<SHIELD_NAME>
+	def_bool $(shields_list_contains,shield_<shield_name>)
+```
+- **shield.yml** - This file defines what peripherals does the shield support
+```yaml
+shield:
+  name: <shield_name>
+  full_name: <full_shield_name>
+  vendor: <shield_vendor>
+  supported_features:
+    - <supported_features>
+```
+
+
+## The PR workflow
+This PR has been a tough one, and I did it through eight commits, where every commit chronologically represents my flow of thinking and adaptations I made following the reviewers' feedback. 
+
+### 1. XSPI controller support 
+Commit: [*dts: arm: st: stm32u3: add XSPI controller support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/74fba4a29f02178d029c263f6429cdf48aadae86) 
+
+Firstly, by reading the official B_M2MEM_PACK1 and NUCLEO_U3C5ZI_Q docs, I noticed that the M.2 connector is tied to **XSPI** peripheral, so I jumped to the docs and [AN5050](https://www.st.com/resource/en/application_note/an5050-getting-started-with-octospi-hexadecaspi-and-xspi-interface-on-stm32-mcus-stmicroelectronics.pdf) had all answers I needed. Long story short, the **XSPI** - e**X**tended **S**erial **P**eripheral **I**nterface, is the new interface that responds to the growing demand for faster, bigger external memories, needed by richer graphics, wider range of multimedia and data-intensive applications in embedded systems, which require higher data throughputs and extra demands on the limited on-chip MCU memory. It is a flexible interface which can be configured as:
+
+ 1. **SPI** for 1-line data transmission
+ 2. **Dual-SPI** for 2-line data transmission
+ 3. **Quad-SPI** for 4-line data transmission
+ 4. **Octo-SPI** for 8-line data transmission
+ 5. **Hexadeca-SPI** for 16-line data transmission
+
+The STM32U3 implements it as OCTOSPI1, so on this SoC the XSPI goes up to octal mode (8 data lines).
+
+I checked out the SoC devicetree files, and there was no XSPI node at all, since I hadn't included it in my SoC and board PR previously. I modified the `dts/arm/st/u3/stm32u3.dtsi` and added the node:
+```dts
+		xspi1: spi@420d1400 {
+			compatible = "st,stm32-xspi";
+			reg = <0x420d1400 0x400>, <0x90000000 DT_SIZE_M(256)>;
+			interrupts = <76 0>;
+			clock-names = "xspix", "xspi-ker";
+			clocks = <&rcc STM32_CLOCK(AHB2_2, 4)>,
+				 <&rcc STM32_SRC_SYSCLK OCTOSPI_SEL(0)>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+```
+where:
+- **xspi1** is the node label, and `spi@420d1400` is the node name, where `0x420d1400` is the **unit address** - the address in the SoC memory map where the XSPI1 peripheral registers begin
+- **compatible** property describes which bindings will be used for this node - in short, which driver will be used for this node
+- **reg** property has two address windows, first one is the **register block** - `<0x420d1400 0x400>` where first address matches unit address, and second one represents size of the register space; Second address window represents predefined address space reserved for **memory-mapped** mode, start address of the memory-mapped region is `0x90000000` and size of that region can be maximally 256MB (This is the maximal size of the external memory we can do memory-mapping with, limitation of address space) 
+- **interrupts** property has two values, where first one describes which IRQ line is used for this node - IRQ line 76 is the _OCTOSPI1 global interrupt_ in the STM32U3 vector table [RM0487](https://www.st.com/resource/en/reference_manual/rm0487-stm32u3-series-armbased-32bit-mcus-stmicroelectronics.pdf); Second value represents the Zephyr interrupt priority.
+- **clock-names/clocks** properties have two clocks, and this can be a little bit confusing. These two clocks actually have two different jobs: 
+
+	- **xspix**	-> `STM32_CLOCK(AHB2_2, 4)` is the bus clock where bit 4 (`OCTOSPI1EN`) of `RCC_AHB2ENR2` (_2 suffix means second AHB2 enable register) enables the peripheral clock. This is the gate that makes the peripheral's AHB ports alive, and with this being closed, access to peripheral registers triggers bus fault.
+	- **xspi-ker** -> `<&rcc STM32_SRC_SYSCLK OCTOSPI_SEL(0)>` is the kernel clock, the one that actually clocks the peripheral. The XSPI derives the memory interface clock (the CLK line towards the flash) from it, through its internal prescaler.
+- **#address-cells / #size-cells** - describes how **child** nodes are addressed: 
+```dts
+	#address-cells = <1>; -> One address cell
+	#size-cells = <0>; -> No size cell
+``` 
+means the child is written as a xspi-nor-flash@0 where 0 is the chip-select index, not a memory address. _! This will be a problem later on...!_
+- **status = "disabled"** - The node initializes in a disabled state.
+
+### 2. M.2 connector support
+Commit: [*dts: bindings: gpio: add ST M2 memory connector binding*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/698ceeda5a40cd3b830d420fb0a5c07661269e47)
+
+As mentioned earlier, the B-M2MEM-PACK1 attaches to Nucleo boards through an M.2 Key A connector. A shield is only portable if the connector it plugs into is described once, centrally, and then reused by every board that exposes it. Therefore, before implementing the shield itself, I first had to add support for the connector.
+
+In Zephyr, connectors are described using two main components - **binding** and **header for pin macros**. This is what I implemented for M.2 memory connector:
+1. **Binding** -  `dts/bindings/gpio/st,m2-memory-connector.yaml` - Defines the connector type and its devicetree representation as a GPIO nexus, and defines how GPIO specifiers `pin`, `flags` are interpreted.
+2. **Header for pin macros** - `include/zephyr/dt-bindings/gpio/m2-memory-connector.h` - Defines connector pins, like:
+```c
+...
+#define M2MEM_CONNECTOR_GPIO_SPI_SCK  16 /**< Optional auxiliary SPI clock */
+#define M2MEM_CONNECTOR_GPIO_SPI_MOSI 17 /**< Optional auxiliary SPI controller-out */
+#define M2MEM_CONNECTOR_GPIO_LDO_EN   18 /**< Mandatory open-drain LDO enable */
+#define M2MEM_CONNECTOR_GPIO_SPI_MISO 19 /**< Optional auxiliary SPI controller-in */
+...
+```
+A shield that uses this connector (**b_m2mem_pack1** in this case) can include this file in its overlay and reference these pins instead of the physical pins exposed on the board.
+
+### 3. Board side connector definition
+Commit: [*boards: st: nucleo_u3c5zi_q: add M2 memory connector support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/1db9c2a6be13467cccc808e19204cbe75853e1ec)
+
+This commit connects the generic M.2 connector from the previous commit to the real pins of the **nucleo_u3c5zi_q**. It adds a new file, `m2_memory_connector.dtsi`, and includes it from the board's main `.dts`, next to the existing `arduino_r3_connector.dtsi`.
+
+The core of the file is the `m2mem_connector` GPIO nexus node. Each line maps a connector pin from `m2-memory-connector.h` to an actual SoC GPIO. The file also defines labels for the buses routed to the connector and for the LDO enable line:
+
+*boards/st/nucleo_u3c5zi_q/m2_memory_connector.dtsi*
+```dts
+m2mem_connector: m2mem-connector {
+	compatible = "st,m2-memory-connector";
+	#gpio-cells = <2>;
+	gpio-map-mask = <0xffffffff 0xffffffc0>;
+	gpio-map-pass-thru = <0 GPIO_DT_FLAGS_MASK>;
+	gpio-map = <M2MEM_CONNECTOR_GPIO_SPI_SCK 0 &gpioa 5 0>,
+		   <M2MEM_CONNECTOR_GPIO_SPI_MOSI 0 &gpioa 7 0>,
+		   <M2MEM_CONNECTOR_GPIO_LDO_EN 0 &gpiod 4 0>,
+		   <M2MEM_CONNECTOR_GPIO_SPI_MISO 0 &gpioa 6 0>,
+		   <M2MEM_CONNECTOR_GPIO_SPI_NSS 0 &gpiod 6 0>,
+		   <M2MEM_CONNECTOR_XSPI_NCS1 0 &gpiog 12 0>,
+		   <M2MEM_CONNECTOR_XSPI_DQS0 0 &gpiog 15 0>,
+		   <M2MEM_CONNECTOR_XSPI_D6 0 &gpiog 9 0>,
+		   <M2MEM_CONNECTOR_XSPI_D7 0 &gpiog 10 0>,
+		   <M2MEM_CONNECTOR_XSPI_D5 0 &gpiog 6 0>,
+		   <M2MEM_CONNECTOR_XSPI_D4 0 &gpiog 3 0>,
+		   <M2MEM_CONNECTOR_XSPI_D3 0 &gpiog 2 0>,
+		   <M2MEM_CONNECTOR_XSPI_D2 0 &gpiog 8 0>,
+		   <M2MEM_CONNECTOR_XSPI_D1 0 &gpiog 5 0>,
+		   <M2MEM_CONNECTOR_XSPI_D0 0 &gpiog 4 0>,
+		   <M2MEM_CONNECTOR_LED2 0 &gpiof 11 0>,
+		   <M2MEM_CONNECTOR_INT1 0 &gpiof 15 0>,
+		   <M2MEM_CONNECTOR_XSPI_CLK1 0 &gpiog 13 0>,
+		   <M2MEM_CONNECTOR_LED1 0 &gpiof 10 0>,
+		   <M2MEM_CONNECTOR_XSPI_NCLK1 0 &gpiog 14 0>,
+		   <M2MEM_CONNECTOR_I2C_SDA 0 &gpiob 7 0>,
+		   <M2MEM_CONNECTOR_I2C_SCL 0 &gpiob 6 0>,
+		   <M2MEM_CONNECTOR_INT2 0 &gpiof 14 0>;
+};
+
+m2mem_i2c: &i2c1 {};
+
+m2mem_xspi: &xspi1 {};
+
+m2mem_ldo_en: &m2mem_connector {};
+```
+
+Because of this mapping, the shield never needs to know which GPIO port the LDO enable is on. It writes `<&m2mem_ldo_en M2MEM_CONNECTOR_GPIO_LDO_EN ...>`, and the board resolves that to `PD4`. In the same way, the shield only uses `m2mem_i2c` and `m2mem_xspi`, never `i2c1` or `xspi1` directly. Another board with the same connector can route it to a different I2C or XSPI instance, and the shield overlays still work without any change.
+
+The bus labels only point to the SoC instances. The pins those instances actually use are alternate-function pins, selected with `pinctrl` in the board `.dts`. They match the I2C and XSPI entries in `gpio-map` above, and all XSPI lines are routed to port G:
+
+*boards/st/nucleo_u3c5zi_q/nucleo_u3c5zi_q.dts*
+```dts
+&i2c1 {
+	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
+	pinctrl-names = "default";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+};
+
+&xspi1 {
+	pinctrl-0 = <&octospi1_clk_pg13 &octospi1_ncs_pg12
+		     &octospi1_io0_pg4 &octospi1_io1_pg5
+		     &octospi1_io2_pg8 &octospi1_io3_pg2
+		     &octospi1_io4_pg3 &octospi1_io5_pg6
+		     &octospi1_io6_pg9 &octospi1_io7_pg10
+		     &octospi1_dqs_pg15 &octospi1_nclk_pg14>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+```
+
+This commit also fixed an earlier mistake of mine. During review, [@erwango](https://github.com/erwango) asked whether the connector's I2C mapping was compatible with the Arduino header. Checking the board user manual (UM3599, Table 14), I found that my *original* board-support PR had mapped I2C1 to the wrong pins:
+
+```diff
+ &i2c1 {
+-	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
++	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
+ 	pinctrl-names = "default";
+```
+
+### 4. B_M2MEM_PACK1 shield
+Commit: [*boards: shields: add ST B-M2MEM-PACK1 support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/a6fcde70be1f27ab8f5d4b68b3d75ca0d5a2a66d)
+
+Here the actual shield-related files are added: 
+  - doc files (a picture and `index.rst` file describing shield features)
+  - common `b_m2mem_pack1_common.dtsi` which defines the features populated on all shield variants (`m2mem-leds` node which describe the 2 LED's and `m2mem_id_eeprom` node which is child node to `m2mem_i2c` parent, and describes the I2C identification EEPROM memory which is used to identify the populated memories on the shield variants)
+  - variant-specific overlay files - `b_m2mem_pack1_*.overlay` - One overlay per variant. Includes common .dtsi file and defines the child devicetree node under `m2mem_xspi` parent node.
+
+At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet below describes the `&m2mem_xspi` reference and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
+
+*boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_18ba.overlay*
+```dts
+&m2mem_xspi {
+	status = "okay";
+
+	mx25uw25645: xspi-nor-flash@0 {
+		compatible = "st,stm32-xspi-nor";
+		reg = <0>;
+		size = <DT_SIZE_M(256)>; /* 256 Mbits */
+		ospi-max-frequency = <DT_FREQ_M(50)>;
+		spi-bus-width = <XSPI_OCTO_MODE>;
+		data-rate = <XSPI_DTR_TRANSFER>;
+		reset-gpios = <&m2mem_ldo_en M2MEM_CONNECTOR_GPIO_LDO_EN GPIO_ACTIVE_LOW>;
+		reset-gpios-duration = <1>;
+		four-byte-opcodes;
+		status = "okay";
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x90000000 DT_SIZE_M(32)>;
+
+		m2mem_flash0: flash@0 {
+			compatible = "soc-nv-flash";
+			reg = <0x0 DT_SIZE_M(32)>;
+			erase-block-size = <DT_SIZE_K(4)>;
+			write-block-size = <1>;
+		};
+	};
+};
+```
+
+### 5. Legacy STM32 XSPI driver JEDEC ID fix
+Commit: [*drivers: flash: stm32_xspi: guard jedec_id init with JESD216_API*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/80550a04acc97ff40b889d69d3ad80941f596536)
+
+While building the `spi_flash` sample against the shield, I hit this error: `error: 'struct flash_stm32_xspi_data' has no member named 'jedec_id'`
+
+The legacy driver initialized `.jedec_id` whenever the devicetree node had a `jedec-id` property. The field itself only exists when `CONFIG_FLASH_JESD216_API` is enabled, and `spi_flash` doesn't enable it. The fix guards the initializer with the same Kconfig option:
+
+*drivers/flash/flash_stm32_xspi.c*
+```diff
+ 		.page_size = SPI_NOR_PAGE_SIZE, /* by default, to be updated by sfdp */
+-		IF_ENABLED(DT_INST_NODE_HAS_PROP(inst, jedec_id), (
+-			.jedec_id = DT_INST_PROP(inst, jedec_id),
+-		))
++		IF_ENABLED(DT_INST_NODE_HAS_PROP(inst, jedec_id), (
++			IF_ENABLED(CONFIG_FLASH_JESD216_API,
++				(.jedec_id = DT_INST_PROP(inst, jedec_id),))
++		))
+ 
+ 		XSPI_DMA_CHANNEL(STM32_XSPI_NODE(inst), tx, TX, MEMORY, PERIPHERAL)
+```
+
+This fixed the build issues I have faced and at a first glance it looked like a finished PR. Even though the flash samples built for all shield variants, the maintainers noticed a major problem with this implementation. 
+
+During review, [@FRASTM](https://github.com/FRASTM) and [@erwango](https://github.com/erwango) pointed at this line in the shield overlay:
+```dts
+ranges = <0x0 0x90000000 DT_SIZE_M(32)>;
+```
+
+`0x90000000` is the base address for the XSPI memory-mapped window, and it depends on the STM32 series. A shield is supposed to be portable, so it shouldn't contain a SoC-specific address. The hard-coded address ended here because of how the legacy XSPI driver models devicetree. The XSPI node has `#size-cells = <0>`, so its child nodes need to be addressed only by chip select. As a result, `ranges` can't be defined at a controller level (at the SoC-level devicetrees), where the window logically belongs, and has to be repeated in every flash node. The window is already defined once in the SoC dtsi, as the controller's second entry:
+
+```dts
+xspi1: spi@420d1400 {
+	reg = <0x420d1400 0x400>, <0x90000000 DT_SIZE_M(256)>;
+	...
+};
+```
+The legacy driver simply didn't use it. 
+
+
+This is the moment [@erwango](https://github.com/erwango) suggested [MSPI](https://docs.zephyrproject.org/latest/hardware/peripherals/mspi.html) as a solution for this problem, and gave me the hint that legacy STM32 QSPI, OSPI and XSPI drivers will be replaced with MSPI in the future Zephyr releases. The STM32 MSPI driver reads the memory-map base directly from `reg[1]`, so with MSPI the shield doesn't need to know about address at all. This was enough for me to start migration to the MSPI.
+
+### 6. Convert the STM32U3 SoC XSPI node to MSPI controller
+Commit: [*dts: arm: st: stm32u3: convert SoC XSPI node to MSPI controller*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/991917310866b7827e8fca22b49dd0547ce63b46)
+
+At the time, the STM32U3 was a fairly new SoC, and only one board in Zephyr used it: the nucleo_u3c5zi_q, the same board I was working on. That meant I could start the migration from the root XSPI node (xspi1: spi@420d1400) and switch it to MSPI directly, without worrying about breaking other boards that depend on it.
+
+
+With these changes, the xspi1 node has been converted from legacy to MSPI driver:
+
+*dts/arm/st/u3/stm32u3.dtsi*
+```diff
+ xspi1: spi@420d1400 {
+-	compatible = "st,stm32-xspi";
++	compatible = "st,stm32-xspi-controller";
+ 	reg = <0x420d1400 0x400>, <0x90000000 DT_SIZE_M(256)>;
+ 	interrupts = <76 0>;
+ 	clock-names = "xspix", "xspi-ker";
+ 	clocks = <&rcc STM32_CLOCK(AHB2_2, 4)>,
+ 		 <&rcc STM32_SRC_SYSCLK OCTOSPI_SEL(0)>;
++	clock-frequency = <DT_FREQ_M(50)>;
++	op-mode = "MSPI_OP_MODE_CONTROLLER";
+ 	#address-cells = <1>;
+ 	#size-cells = <0>;
+ 	status = "disabled";
+ };
+```
+
+### 7. Convert the shield overlays to MSPI
+Commit: [*boards: shields: st_b_m2mem_pack1: migrate to MSPI*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/5dc71b80ebf1ae9b5be80b4938236ba25439ad39)
+
+With the controller converted, the shield overlays could follow. Every NOR variant moved from the legacy `st,stm32-xspi-nor` binding to the generic `jedec,mspi-nor`. The diff below shows one of the shield variants - `mb1927_33ba` (Macronix MX25LM51245):
+
+*boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_33ba.overlay*
+```diff
+-	mx25lm51245: xspi-nor-flash@0 {
+-		compatible = "st,stm32-xspi-nor";
++	m2mem_flash: mx25lm51245: mspi-nor-flash@0 {
++		compatible = "mxicy,mx25u", "jedec,mspi-nor";
+ 		reg = <0>;
+ 		size = <DT_SIZE_M(512)>; /* 512 Mbits */
+-		ospi-max-frequency = <DT_FREQ_M(50)>;
+-		spi-bus-width = <XSPI_OCTO_MODE>;
+-		data-rate = <XSPI_DTR_TRANSFER>;
+ ...
+-		#address-cells = <1>;
+-		#size-cells = <1>;
+-		ranges = <0x0 0x90000000 DT_SIZE_M(64)>;
++		mspi-max-frequency = <DT_FREQ_M(50)>;
++		mspi-io-mode = "MSPI_IO_MODE_OCTAL";
++		mspi-data-rate = "MSPI_DATA_RATE_SINGLE";
++		mspi-hardware-ce-num = <0>;
++
++		read-command = <0xec13>;
++		write-command = <0x12ed>;
++		command-length = "INSTR_2_BYTE";
++		rx-dummy = <20>;
+```
+
+The most important change is the line that is gone: `ranges = <0x0 0x90000000 ...>`. The shield no longer contains any SoC-specific address, because the MSPI driver takes the memory-map base from the controller's `reg[1]`.
+
+A few other changes came with the migration:
+- **Stable `m2mem_flash` label**: every variant exposes its flash under the same label, so a sample can use `flash0 = &m2mem_flash;` without knowing which memory is populated.
+- **`mspi_flash` sample overlay** for `nucleo_u3c5zi_q`, built on that label.
+- **Dropped the `mb1928_18la` variant**: its M95P32 is a page EEPROM (512-byte pages, non-standard page-program opcode) rather than a regular NOR flash and needs its own driver. 
+
+### 8. Add shield scenarios to the mspi_flash sample
+Commit: [*samples: drivers: mspi_flash: add B_M2MEM_PACK1 shield scenarios*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/e5da174d34a4d2f59bb42f3d5b9d8fac5afd687b)
+
+The `nucleo_u3c5zi_q` has no external flash of its own, so the existing `mspi_flash` scenario filters it out. To get the shield covered by CI and Twister, I added one scenario per variant. Each scenario passes the shield through `extra_args`:
+
+*samples/drivers/mspi/mspi_flash/sample.yaml*
+```yaml
+  sample.drivers.mspi.flash.b_m2mem_pack1_mb1927_33ba:
+    tags:
+      - shield
+    platform_allow:
+      - nucleo_u3c5zi_q
+    integration_platforms:
+      - nucleo_u3c5zi_q
+    extra_args: SHIELD=b_m2mem_pack1_mb1927_33ba
+```
+
+To keep the expected console output defined only once, I moved the shared `tags` and the console `harness_config` from the original scenario into the `common` section. The existing platform scenario and the four new shield scenarios now validate against the same erase/write/read sequence.
+
+To build the sample for a specific variant (e.g. mb1927_33ba), pass the matching shield name to `west build`:
+
+```shell
+west build -b nucleo_u3c5zi_q samples/drivers/mspi/mspi_flash --shield b_m2mem_pack1_mb1927_33ba
+```
+
+
+## Hardware tests
+
+The PR was merged with build coverage only, because the shield cards had not arrived yet. Once they did, running `mspi_flash` on real hardware revealed a few problems that no build could catch. They were fixed in follow-up PRs.
+
+### RDID returned zeros
+PR: [#116855](https://github.com/zephyrproject-rtos/zephyr/pull/116855)
+
+The first test, on the MB1928-33LB card (Winbond W25Q16JV), failed right at init:
+
+```
+<err> flash_mspi_nor: JEDEC ID mismatch, read: 00 00 00, expected: ef 40 15
+mspi-nor-flash@0: device not ready.
+```
+
+The STM32 XSPI MSPI driver sent an address phase with every command except Write Enable, including Read JEDEC ID (`0x9F`). I replaced the opcode-specific special case with a general rule:
+
+*drivers/mspi/mspi_stm32_xspi.c*
+```diff
+ 
+-	if ((cmd.Instruction == MSPI_NOR_CMD_WREN) || (cmd.Instruction == MSPI_NOR_OCMD_WREN)) {
+-		/* Write Enable only accepts HAL_XSPI_ADDRESS_NONE */
++	if (dev_data->ctx.xfer.addr_length == 0) {
++		/* Commands without an address phase, e.g. RDID or WREN */
+ 		cmd.AddressMode = HAL_XSPI_ADDRESS_NONE;
+ 	}
+```
+
+The OSPI and QSPI variants of the driver had the same special case, so the PR applies the same fix to them as well.
+
+
+### A reset that wasn't a reset
+PR: [#116862](https://github.com/zephyrproject-rtos/zephyr/pull/116862)
+
+The memory on each card is powered through an LDO whose enable pin is wired to the M.2 connector, and the devicetree describes that pin as the memory's `reset-gpios`. A reset is therefore a power cycle. Without a pulse length, the driver switched the regulator off and on in the same instant, and the memory never noticed.
+
+This broke the octal cards. The firmware switches the memory into OPI mode at boot. After an MCU reset, the memory was still in OPI, the firmware talked single-line SPI to it, and nothing answered. The only way out was to unplug the board. The fix gives the rail time to actually collapse:
+
+```dts
+t-reset-pulse = <5000000>;
+t-reset-recovery = <10000000>;
+```
+
+### Values read from the hardware
+PR: [#116862](https://github.com/zephyrproject-rtos/zephyr/pull/116862)
+
+- **MX25UW25645G (`mb1927_18ba`)**: the datasheet isn't public, so the `jedec-id` and `rx-dummy` were left as `TODO`. The memory reports `c2 81 39`. The dummy cycle count turned out not to belong in devicetree at all: the `mxicy,mx25u` quirk reads it from the memory's configuration register 2, so the property was dropped.
+- **IS25LP032D (`mb1928_33la`)**: the JEDEC ID read fine, but every read-back returned `0x88`. This memory ships with its Quad Enable bit cleared, so it ignores the quad read and program commands. The SFDP reports the QE requirement, which maps to `quad-enable-requirements = "S1B6"`.
+
+### Shield sample and devicetree fixes
+PR: [#118259](https://github.com/zephyrproject-rtos/zephyr/pull/118259)
+
+While writing a dedicated shield sample, I found two more devicetree mistakes:
+- The LEDs had inverted active states.
+- The ID EEPROM address was `0x57` instead of `0x51`, which `i2c scan m2mem_i2c` in the Zephyr shell showed right away.
+
+The sample reads the card info from the ID EEPROM and checks that it matches the `jedec-id` in devicetree, which catches a build for the wrong variant. Then it runs an erase/write test and shows the result on the shield LEDs.
+
+### Results
+
+- `samples/drivers/mspi/mspi_flash` on `nucleo_u3c5zi_q`, single and multi-sector erase, write and read-back:
+
+| Shield variant | Memory | Bus mode | Result |
+|---|---|---|---|
+| `b_m2mem_pack1_mb1927_18ba` | Macronix MX25UW25645G | Octal STR | pass |
+| `b_m2mem_pack1_mb1927_33ba` | Macronix MX25LM51245G | Octal STR | pass |
+| `b_m2mem_pack1_mb1928_33la` | ISSI IS25LP032D | Quad STR | pass |
+| `b_m2mem_pack1_mb1928_33lb` | Winbond W25Q16JV | Quad STR | pass |
+
+
+
+- `samples/shields/b_m2mem_pack1` on `nucleo_u3c5zi_q`, card info and JEDEC ID check from the ID EEPROM, erase, write and read-back, with results on the console and the card LEDs:
+
+<p align="center">
+  <img src=".docs/m2mem_sample.gif" alt="The B_M2MEM_PACK1 shield sample running on NUCLEO-U3C5ZI-Q: serial console with test results above, the board with the M.2 card and its status LEDs below." width="360">
+  <br>
+  <em>The shield sample running on NUCLEO-U3C5ZI-Q: test results on the serial console and on the card LEDs.</em>
+</p>
+
+## Where this led
+
+When I first noticed the M.2 slot on the bottom of the board, I expected a small shield PR. It ended up being something bigger: one of the first STM32 platforms in Zephyr to describe its external memory controller as an MSPI controller in the SoC devicetree itself, not only in a sample overlay. As far as I know, it was also the first to exercise the STM32 MSPI stack on real hardware across multiple flash memories at once: four memories from three vendors (Macronix, ISSI, Winbond), in both quad and octal mode, all from one board.
+
+That combination turned the shield into a test bench. Each card stresses the driver in a different way, and the bugs it found were not shield bugs. The missing address-phase rule from [#116855](https://github.com/zephyrproject-rtos/zephyr/pull/116855) affected the XSPI, OSPI and QSPI drivers alike, so every STM32 board using MSPI benefits from it, not just this one.
+
+It was also the starting point for the work that followed:
+
+- **Porting the XSPI MSPI driver to STM32Cube2 (HAL2)** ([#112951](https://github.com/zephyrproject-rtos/zephyr/pull/112951)). Newer series such as the STM32C5 ship only with HAL2, which renames the XSPI types, fields and constants and changes several call signatures, so the existing driver could not even compile there. Without this port, the C5 board would have had an M.2 slot and nothing to drive it.
+- **A second host board, built on top of that port.** With the driver running on HAL2, the Nucleo-C5A3ZG got its own `m2_memory_connector.dtsi` exporting the same `m2mem_xspi`, `m2mem_i2c` and `m2mem_ldo_en` labels ([#112731](https://github.com/zephyrproject-rtos/zephyr/pull/112731)). The shield overlays worked on it **without a single change**, which is exactly what removing the hardcoded `ranges` was supposed to make possible.
+- **Migration of all STM32 series to MSPI.** [@FRASTM](https://github.com/FRASTM) later opened [#116148](https://github.com/zephyrproject-rtos/zephyr/issues/116148) to move every STM32 series from the legacy QSPI, OSPI and XSPI flash drivers to MSPI. The STM32U3 was already there, since this PR had converted its XSPI node, and I kept contributing to the effort with board migrations and the driver fixes they uncovered.
+
+The C5 bring-up and the HAL2 port are a story of their own, and they deserve their own post.
+
+---
+A big thanks to [@FRASTM](https://github.com/FRASTM), [@erwango](https://github.com/erwango) and [@kartben](https://github.com/kartben) for the reviews and guidance. Their reviews shaped most of this work, and the move to MSPI was one of their suggestions, which ended up defining the next few months of my open-source contributions.
