@@ -6,7 +6,7 @@ Welcome to the _behind the scenes_ view of my open-source contributions. Here yo
 
 | Date | Title | Project |
 |------|-------|---------|
-| 2026-06 | [Adding B_M2MEM_PACK1 shield support to Zephyr](posts/b_m2mem_pack1_shield/2026-06-zephyr-b-m2mem-pack1-shield.md) | [Zephyr RTOS](https://github.com/zephyrproject-rtos/zephyr) |
+| 2026-06 | [Adding B_M2MEM_PACK1 shield support to Zephyr](open-source-contributions/zephyr-rtos/b-m2mem-pack1-shield/b-m2mem-pack1-shield.md) | [Zephyr RTOS](https://github.com/zephyrproject-rtos/zephyr) |
 
 ## About me
 
