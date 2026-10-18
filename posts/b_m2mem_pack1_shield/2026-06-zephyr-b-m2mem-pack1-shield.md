@@ -26,8 +26,8 @@ In Zephyr, a shield is defined by two key characteristics:
 
 The connection between the host boards and a shield it carries is being done by Devicetree files on the board and shield sides:
 1. **Board side** - The boards side must have dedicated devicetree file (e.g. **arduino_r3_connector.dtsi**) which uses [GPIO Nexus nodes](https://docs.zephyrproject.org/latest/hardware/porting/shields.html#gpio-nexus-node). It is like an interface between SoC GPIO pins and pins on the shield itself. 
-Example: Every board that supports the arduino_r3_connector, must have a file `arduino_r3_header.dtsi` which has the `arduino_header` GPIO Nexus node which maps pins exposed on the board's SoC to the common pin-names on the interface itself. It looks like this:
-```
+Example: Every board that supports the arduino_r3_connector, must have a file `arduino_r3_connector.dtsi` which has the `arduino_header` GPIO Nexus node which maps pins exposed on the board's SoC to the common pin-names on the interface itself. It looks like this:
+```dts
 arduino_header: connector {
         compatible = "arduino-header-r3";
         #gpio-cells = <2>;
@@ -58,7 +58,7 @@ arduino_header: connector {
 };
 ```
 It also defines the labels for buses exposed on the connector:
-```
+```dts
 arduino_i2c: &i2c1 {};
 
 arduino_spi: &spi1 {};
@@ -69,11 +69,11 @@ arduino_serial: &lpuart1 {};
 
 2. **Shield side** - Consists of shield devicetree files, more precise:
 - **<shield_name>.overlay** - This file includes the connector gpio bindings, i.e:
-```
+```dts
 #include <zephyr/dt-bindings/gpio/arduino-header-r3.h>
 ```
 and it can optionally define some root devicetree node which is used to define a new node, and probably define something unique to that shield (i.e. some LED's,...) which cannot be referenced by some other, existing node.
-```
+```dts
 / {
 	my_shield {
 		compatible = "vendor,my-shield";
@@ -82,7 +82,7 @@ and it can optionally define some root devicetree node which is used to define a
 };
 ```
 More importantly, this file references existing nodes (defined in connector devicetree files) and adapts them to the peripherals exposed on the shield, i.e.:
-```
+```dts
 &arduino_spi {
 	status = "okay";
 	cs-gpios = <&arduino_header ARDUINO_HEADER_R3_D9 GPIO_ACTIVE_LOW>;
@@ -90,12 +90,12 @@ More importantly, this file references existing nodes (defined in connector devi
 ```
 
 - **Kconfig.shield** - This file defines the Kconfig symbol for the shield
-```
+```kconfig
 config SHIELD_<SHIELD_NAME>
 	def_bool $(shields_list_contains,shield_<shield_name>)
 ```
-- **shield.yaml** - This file defines what peripherals does the shield support
-```
+- **shield.yml** - This file defines what peripherals does the shield support
+```yaml
 shield:
   name: <shield_name>
   full_name: <full_shield_name>
@@ -117,10 +117,12 @@ Firstly, by reading the official B_M2MEM_PACK1 and NUCLEO_U3C5ZI_Q docs, I notic
  2. **Dual-SPI** for 2-line data transmission
  3. **Quad-SPI** for 4-line data transmission
  4. **Octo-SPI** for 8-line data transmission
- 5. **Hexadexa-SPI** for 16-line data transmission
+ 5. **Hexadeca-SPI** for 16-line data transmission
+
+The STM32U3 implements it as OCTOSPI1, so on this SoC the XSPI goes up to octal mode (8 data lines).
 
 I checked out the SoC devicetree files, and there wasn't XSPI node at all, I didn't include it in my SoC and board PR previously. I modified the `dts/arm/st/u3/stm32u3.dtsi` and added the node:
-```
+```dts
 		xspi1: spi@420d1400 {
 			compatible = "st,stm32-xspi";
 			reg = <0x420d1400 0x400>, <0x90000000 DT_SIZE_M(256)>;
@@ -137,14 +139,13 @@ where:
 - **xspi1** is the node label, and `spi@420d1400` is the node name, where `0x420d1400` is the **unit address** - the address in the SoC memory map where the XSPI1 peripheral registers begin
 - **compatible** property describes which bindings will be used for this node - in short, which driver will be used for this node
 - **reg** property has two address windows, first one is the **register block** - `<0x420d1400 0x400>` where first address matches unit address, and second one represents size of the register space; Second address window represents predefined address space reserved for **memory-mapped** mode, start address of the memory-mapped region is `0x90000000` and size of that region can be maximally 256MB (This is the maximal size of the external memory we can do memory-mapping with, limitation of address space) 
-_! Note that we will have problem later on with this !_ 
 - **interrupts** property has two values, where first one describes which IRQ line is used for this node - IRQ line 76 is the _OCTOSPI1 global interrupt_ in the STM32U3 vector table [RM0487](https://www.st.com/resource/en/reference_manual/rm0487-stm32u3-series-armbased-32bit-mcus-stmicroelectronics.pdf); Second value represents the Zephyr interrupt priority.
 - **clock-names/clocks** properties have two clocks, and this can be a little bit confusing. These two clocks actually have two different jobs: 
 
-	- **xspix**	-> `STM32_CLOCK(AHB2_2, 4)` is the bus clock where bit 4 selects (`OCTOSPI1EN`) of `RCC_AHB2ENR2` (_2 sufix means second AHB2 enable register). This is the gate that makes the peripheral's AHB ports alive, and with this being closed, access to peripheral registers triggers bus fault.
-	- **xspi-ker** -> `<&rcc STM32_SRC_SYSCLK OCTOSPI_SEL(0)>` is the kernel clock, the one that actually clocks the peripheral. This clock actually produces the bus clock.
+	- **xspix**	-> `STM32_CLOCK(AHB2_2, 4)` is the bus clock where bit 4 (`OCTOSPI1EN`) of `RCC_AHB2ENR2` (_2 suffix means second AHB2 enable register) enables the peripheral clock. This is the gate that makes the peripheral's AHB ports alive, and with this being closed, access to peripheral registers triggers bus fault.
+	- **xspi-ker** -> `<&rcc STM32_SRC_SYSCLK OCTOSPI_SEL(0)>` is the kernel clock, the one that actually clocks the peripheral. The XSPI derives the memory interface clock (the CLK line towards the flash) from it, through its internal prescaler.
 - **#address-cells / #size-cells** - describes how **child** nodes are addressed: 
-```
+```dts
 	#address-cells = <1>; -> One address cell
 	#size-cells = <0>; -> No size cell
 ``` 
@@ -159,7 +160,7 @@ As mentioned earlier, the B-M2MEM-PACK1 attaches to Nucleo boards through an M.2
 In Zephyr, connectors are described using two main components - **binding** and **header for pin macros**. This is what I implemented for M.2 memory connector:
 1. **Binding** -  `dts/bindings/gpio/st,m2-memory-connector.yaml` - Defines the connector type and its devicetree representation as a GPIO nexus, and defines how GPIO specifiers `pin`, `flags` are interpreted.
 2. **Header for pin macros** - `include/zephyr/dt-bindings/gpio/m2-memory-connector.h` - Defines connector pins, like:
-```
+```c
 ...
 #define M2MEM_CONNECTOR_GPIO_SPI_SCK  16 /**< Optional auxiliary SPI clock */
 #define M2MEM_CONNECTOR_GPIO_SPI_MOSI 17 /**< Optional auxiliary SPI controller-out */
@@ -184,7 +185,7 @@ Here the actual shield-related files are added:
     At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet below describes the dereferenced `m2mem_xspi` node and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
 
     *boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_18ba.overlay* 
-    ```
+    ```dts
 
       &m2mem_xspi {
     	  status = "okay";
@@ -239,19 +240,19 @@ The legacy driver initialized `.jedec_id` whenever the devicetree node had a `je
 This fixed the build issues I have faced and at a first glance it looked like a finished PR. Even though the flash samples built for all shield variants, the maintainers noticed a major problem with this implementation. 
 
 During review, [@FRASTM](https://github.com/FRASTM) and [@erwango](https://github.com/erwango) pointed at this line in the shield overlay:
-```
-ranges = <0x00 0x90000000 DT_SIZE(32)>
+```dts
+ranges = <0x0 0x90000000 DT_SIZE_M(32)>;
 ```
 
 `0x90000000` is the base address for the XSPI memory-mapped window, and it depends on the STM32 series. A shield is supposed to be portable, so it shouldn't contain a SoC-specific address. The hard-coded address ended here because of how the legacy XSPI driver models devicetree. The XSPI node has `#size-cells = <0>`, so its child nodes need to be addressed only by chip select. As a result, `ranges` can't be defined at a controller level (at the SoC-level devicetrees), where the window logically belongs, and has to be repeated in every flash node. The window is already defined once in the SoC dtsi, as the controller's second entry:
 
-```
+```dts
 xspi1: spi@420d1400 {
 	reg = <0x420d1400 0x400>, <0x90000000 DT_SIZE_M(256)>;
 	...
 };
 ```
-Just the legacy XSPI driver didn't have the solution to obtain that entry. 
+The legacy driver simply didn't use it. 
 
 
 This is the moment [@erwango](https://github.com/erwango) suggested [MSPI](https://docs.zephyrproject.org/latest/hardware/peripherals/mspi.html) as a solution for this problem, and gave me the hint that legacy STM32 QSPI, OSPI and XSPI drivers will be replaced with MSPI in the future Zephyr releases. The STM32 MSPI driver reads the memory-map base directly from `reg[1]`, so with MSPI the shield doesn't need to know about address at all. This was enough for me to start migration to the MSPI.
@@ -341,6 +342,6 @@ To keep the expected console output defined only once, I moved the shared `tags`
 
 To build the sample for a specific variant (e.g. mb1927_33ba), pass the matching shield name to `west build`:
 
-```
+```shell
 west build -b nucleo_u3c5zi_q samples/drivers/mspi/mspi_flash --shield b_m2mem_pack1_mb1927_33ba
 ```
