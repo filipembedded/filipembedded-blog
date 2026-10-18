@@ -109,7 +109,7 @@ shield:
 This PR has been a tough one, and I did it through eight commits, where every commit chronologically represents my flow of thinking and adaptations I made by respecting reviewers' feedback. 
 
 ### 1. XSPI controller support 
-Commit: *dts: arm: st: stm32u3: add XSPI controller support* (74fba4a)
+Commit: [*dts: arm: st: stm32u3: add XSPI controller support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/74fba4a29f02178d029c263f6429cdf48aadae86) 
 
 Firstly, by reading the official B_M2MEM_PACK1 and NUCLEO_U3C5ZI_Q docs, I noticed that the M.2 connector is tied to **XSPI** peripheral, so I jumped to the docs and [AN5050](https://www.st.com/resource/en/application_note/an5050-getting-started-with-octospi-hexadecaspi-and-xspi-interface-on-stm32-mcus-stmicroelectronics.pdf) had all answers I needed. Long story short, the **XSPI** - e**X**tended **S**erial **P**eripheral **I**nterface, is the new interface that responds to the growing demand for faster, bigger external memories, needed by richer graphics, wider range of multimedia and data-intensive applications in embedded systems, which require higher data throughputs and extra demands on the limited on-chip MCU memory. It is a flexible interface which can be configured as:
 
@@ -153,7 +153,7 @@ means the child is written as a xspi-nor-flash@0 where 0 is the chip-select inde
 - **status = "disabled"** - The node initializes in a disabled state.
 
 ### 2. M.2 connector support
-Commit: *dts: bindings: gpio: add ST M2 memory connector binding* (698ceed)
+Commit: [*dts: bindings: gpio: add ST M2 memory connector binding*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/698ceeda5a40cd3b830d420fb0a5c07661269e47)
 
 As mentioned earlier, the B-M2MEM-PACK1 attaches to Nucleo boards through an M.2 Key A connector. A shield is only portable if the connector it plugs into is described once, centrally, and then reused by every board that exposes it. Therefore, before implementing the shield itself, I first had to add support for the connector.
 
@@ -171,12 +171,12 @@ In Zephyr, connectors are described using two main components - **binding** and 
 ,where some shield that uses this connector can include this file in shield overlay file and reference this pins to a physical pins exposed on the shield itself. (**b_m2mem_pack1** shield in this case).
 
 ### 3. Board side connector definition
-Commit: *boards: st: nucleo_u3c5zi_q: add M2 memory connector support* (1db9c2a)
+Commit: [*boards: st: nucleo_u3c5zi_q: add M2 memory connector support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/1db9c2a6be13467cccc808e19204cbe75853e1ec)
 
 This commit introduced the `m2_memory_connector.dtsi` which is used to describe the M.2 connector on the **nucleo_u3c5zi_q** board - it defines the connections between GPIO pins on the board and pins on actual M.2 connector. It is adapted to the **nucleo_u3c5zi_q** pinout and respects the **m2-memory-connector binding**.
 
 ### 4. B_M2MEM_PACK1 shield
-Commit: *boardsL shields: add ST B-M2MEM-PACK1 support*
+Commit: [*boards: shields: add ST B-M2MEM-PACK1 support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/a6fcde70be1f27ab8f5d4b68b3d75ca0d5a2a66d)
 
 Here the actual shield-related files are added: 
   - doc files (a picture and `index.rst` file describing shield features)
@@ -217,7 +217,7 @@ Here the actual shield-related files are added:
     ```
 
 ### 5. Legacy STM32 XSPI driver JEDEC ID fix
-Commit: *drivers: flash: stm32_xspi: guard jedec_id init with JESD216_API* (80550a0)
+Commit: [*drivers: flash: stm32_xspi: guard jedec_id init with JESD216_API*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/80550a04acc97ff40b889d69d3ad80941f596536)
 
 While building the `spi_flash` sample against the shield, I hit this error: `error: 'struct flash_stm32_xspi_data' has no member named 'jedec_id'`
 
@@ -258,7 +258,7 @@ The legacy driver simply didn't use it.
 This is the moment [@erwango](https://github.com/erwango) suggested [MSPI](https://docs.zephyrproject.org/latest/hardware/peripherals/mspi.html) as a solution for this problem, and gave me the hint that legacy STM32 QSPI, OSPI and XSPI drivers will be replaced with MSPI in the future Zephyr releases. The STM32 MSPI driver reads the memory-map base directly from `reg[1]`, so with MSPI the shield doesn't need to know about address at all. This was enough for me to start migration to the MSPI.
 
 ### 6. Convert the STM32U3 SoC XSPI node to MSPI controller
-Commit: *dts: arm: st: stm32u3: convert SoC XSPI node to MSPI controller* (9919173)
+Commit: [*dts: arm: st: stm32u3: convert SoC XSPI node to MSPI controller*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/991917310866b7827e8fca22b49dd0547ce63b46)
 
 At the time, the STM32U3 was a fairly new SoC, and only one board in Zephyr used it: the nucleo_u3c5zi_q, the same board I was working on. That meant I could start the migration from the root XSPI node (xspi1: spi@420d1400) and switch it to MSPI directly, without worrying about breaking other boards that depend on it.
 
@@ -284,7 +284,7 @@ With these changes, the xspi1 node has been converted from legacy to MSPI driver
 ```
 
 ### 7. Convert the shield overlays to MSPI
-Commit: *boards: shields: st_b_m2mem_pack1: migrate to MSPI* (5dc71b8)
+Commit: [*boards: shields: st_b_m2mem_pack1: migrate to MSPI*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/5dc71b80ebf1ae9b5be80b4938236ba25439ad39)
 
 With the controller converted, the shield overlays could follow. Every NOR variant moved from the legacy `st,stm32-xspi-nor` binding to the generic `jedec,mspi-nor`. The diff below shows one of the shield variants - `mb1927_33ba` (Macronix MX25LM51245):
 
@@ -322,7 +322,7 @@ A few other changes came with the migration:
 - **Dropped the `mb1928_18la` variant**: its M95P32 is a page EEPROM (512-byte pages, non-standard page-program opcode) rather than a regular NOR flash and needs the dedicated driver for itself. 
 
 ### 8. Add shield scenarios to the mspi_flash sample
-Commit: *samples: drivers: mspi_flash: add B_M2MEM_PACK1 shield scenarios* (e5da174)
+Commit: [*samples: drivers: mspi_flash: add B_M2MEM_PACK1 shield scenarios*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/e5da174d34a4d2f59bb42f3d5b9d8fac5afd687b)
 
 The `nucleo_u3c5zi_q` has no external flash of its own, so the existing `mspi_flash` scenario filters it out. To get the shield covered by CI and Twister, I added one scenario per variant. Each scenario passes the shield through `extra_args`:
 
