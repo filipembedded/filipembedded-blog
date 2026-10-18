@@ -2,7 +2,7 @@
 - [PR #109004](https://github.com/zephyrproject-rtos/zephyr/pull/109004), merged **24.06.2026**.
 
 ## Intro
-After I added upstream support for [STM32U3C5 SoC and NUCLEO-U3C5ZI-Q board](https://github.com/zephyrproject-rtos/zephyr/pull/105503), I observed the board and I got the idea to make one more contribution for it. I noticed that this board has a M.2 Key-A slot at the bottom side, and it sparked my curiosity.
+After I added upstream support for [STM32U3C5 SoC and NUCLEO-U3C5ZI-Q board](https://github.com/zephyrproject-rtos/zephyr/pull/105503), I took a closer look at the board and got the idea to make one more contribution for it. I noticed that this board has a M.2 Key-A slot at the bottom side, and it sparked my curiosity.
 After some research, I found out the intention behind this slot - the [B_M2MEM_PACK1](https://www.st.com/en/evaluation-tools/b-m2mem-pack1.html) shield.
 <p align="center">
   <img src=".docs/nucleo_u3c5zi_q_M.2.jpeg" alt="NUCLEO-U3C5ZI-Q top and bottom view; the M.2 Key-A connector is highlighted on the underside of the board." width="760">
@@ -68,11 +68,11 @@ arduino_serial: &lpuart1 {};
 
 
 2. **Shield side** - Consists of shield devicetree files, more precise:
-- **<shield_name>.overlay** - This file includes the connector gpio bindings, i.e:
+- **<shield_name>.overlay** - This file includes the connector gpio bindings, e.g.:
 ```dts
 #include <zephyr/dt-bindings/gpio/arduino-header-r3.h>
 ```
-and it can optionally define some root devicetree node which is used to define a new node, and probably define something unique to that shield (i.e. some LED's,...) which cannot be referenced by some other, existing node.
+and it can optionally define some root devicetree node which is used to define a new node, and probably define something unique to that shield (e.g. some LED's,...) which cannot be referenced by some other, existing node.
 ```dts
 / {
 	my_shield {
@@ -81,7 +81,7 @@ and it can optionally define some root devicetree node which is used to define a
 	};
 };
 ```
-More importantly, this file references existing nodes (defined in connector devicetree files) and adapts them to the peripherals exposed on the shield, i.e.:
+More importantly, this file references existing nodes (defined in connector devicetree files) and adapts them to the peripherals exposed on the shield, e.g.:
 ```dts
 &arduino_spi {
 	status = "okay";
@@ -106,7 +106,7 @@ shield:
 
 
 ## The PR workflow
-This PR has been a tough one, and I did it through eight commits, where every commit chronologically represents my flow of thinking and adaptations I made by respecting reviewers' feedback. 
+This PR has been a tough one, and I did it through eight commits, where every commit chronologically represents my flow of thinking and adaptations I made following the reviewers' feedback. 
 
 ### 1. XSPI controller support 
 Commit: [*dts: arm: st: stm32u3: add XSPI controller support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/74fba4a29f02178d029c263f6429cdf48aadae86) 
@@ -121,7 +121,7 @@ Firstly, by reading the official B_M2MEM_PACK1 and NUCLEO_U3C5ZI_Q docs, I notic
 
 The STM32U3 implements it as OCTOSPI1, so on this SoC the XSPI goes up to octal mode (8 data lines).
 
-I checked out the SoC devicetree files, and there wasn't XSPI node at all, I didn't include it in my SoC and board PR previously. I modified the `dts/arm/st/u3/stm32u3.dtsi` and added the node:
+I checked out the SoC devicetree files, and there was no XSPI node at all, since I hadn't included it in my SoC and board PR previously. I modified the `dts/arm/st/u3/stm32u3.dtsi` and added the node:
 ```dts
 		xspi1: spi@420d1400 {
 			compatible = "st,stm32-xspi";
@@ -168,7 +168,7 @@ In Zephyr, connectors are described using two main components - **binding** and 
 #define M2MEM_CONNECTOR_GPIO_SPI_MISO 19 /**< Optional auxiliary SPI controller-in */
 ...
 ```
-,where some shield that uses this connector can include this file in shield overlay file and reference this pins to a physical pins exposed on the shield itself. (**b_m2mem_pack1** shield in this case).
+A shield that uses this connector (**b_m2mem_pack1** in this case) can include this file in its overlay and reference these pins instead of the physical pins exposed on the board.
 
 ### 3. Board side connector definition
 Commit: [*boards: st: nucleo_u3c5zi_q: add M2 memory connector support*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/1db9c2a6be13467cccc808e19204cbe75853e1ec)
@@ -258,7 +258,7 @@ Here the actual shield-related files are added:
   - common `b_m2mem_pack1_common.dtsi` which defines the features populated on all shield variants (`m2mem-leds` node which describe the 2 LED's and `m2mem_id_eeprom` node which is child node to `m2mem_i2c` parent, and describes the I2C identification EEPROM memory which is used to identify the populated memories on the shield variants)
   - variant-specific overlay files - `b_m2mem_pack1_*.overlay` - One overlay per variant. Includes common .dtsi file and defines the child devicetree node under `m2mem_xspi` parent node.
 
-At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet below describes the dereferenced `m2mem_xspi` node and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
+At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet below describes the `&m2mem_xspi` reference and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
 
 *boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_18ba.overlay*
 ```dts
@@ -394,7 +394,7 @@ The most important change is the line that is gone: `ranges = <0x0 0x90000000 ..
 A few other changes came with the migration:
 - **Stable `m2mem_flash` label**: every variant exposes its flash under the same label, so a sample can use `flash0 = &m2mem_flash;` without knowing which memory is populated.
 - **`mspi_flash` sample overlay** for `nucleo_u3c5zi_q`, built on that label.
-- **Dropped the `mb1928_18la` variant**: its M95P32 is a page EEPROM (512-byte pages, non-standard page-program opcode) rather than a regular NOR flash and needs the dedicated driver for itself. 
+- **Dropped the `mb1928_18la` variant**: its M95P32 is a page EEPROM (512-byte pages, non-standard page-program opcode) rather than a regular NOR flash and needs its own driver. 
 
 ### 8. Add shield scenarios to the mspi_flash sample
 Commit: [*samples: drivers: mspi_flash: add B_M2MEM_PACK1 shield scenarios*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/e5da174d34a4d2f59bb42f3d5b9d8fac5afd687b)
