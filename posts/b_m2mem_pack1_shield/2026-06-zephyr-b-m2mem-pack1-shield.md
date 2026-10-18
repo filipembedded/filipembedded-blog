@@ -257,39 +257,39 @@ Here the actual shield-related files are added:
   - doc files (a picture and `index.rst` file describing shield features)
   - common `b_m2mem_pack1_common.dtsi` which defines the features populated on all shield variants (`m2mem-leds` node which describe the 2 LED's and `m2mem_id_eeprom` node which is child node to `m2mem_i2c` parent, and describes the I2C identification EEPROM memory which is used to identify the populated memories on the shield variants)
   - variant-specific overlay files - `b_m2mem_pack1_*.overlay` - One overlay per variant. Includes common .dtsi file and defines the child devicetree node under `m2mem_xspi` parent node.
-    At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet below describes the dereferenced `m2mem_xspi` node and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
 
-    *boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_18ba.overlay* 
-    ```dts
+At the time of creating this commit, I only knew about legacy XSPI drivers provided in Zephyr. A snippet below describes the dereferenced `m2mem_xspi` node and child node describing the **Macronix MX25UW25645** Octal SPI memory, and specifying the legacy XSPI driver by setting `compatible = "st,stm32-xspi-nor"`
 
-      &m2mem_xspi {
-    	  status = "okay";
+*boards/shields/st_b_m2mem_pack1/b_m2mem_pack1_mb1927_18ba.overlay*
+```dts
+&m2mem_xspi {
+	status = "okay";
 
-      	mx25uw25645: xspi-nor-flash@0 {
-      		compatible = "st,stm32-xspi-nor";
-      		reg = <0>;
-      		size = <DT_SIZE_M(256)>; /* 256 Mbits */
-      		ospi-max-frequency = <DT_FREQ_M(50)>;
-      		spi-bus-width = <XSPI_OCTO_MODE>;
-      		data-rate = <XSPI_DTR_TRANSFER>;
-      		reset-gpios = <&m2mem_ldo_en M2MEM_CONNECTOR_GPIO_LDO_EN GPIO_ACTIVE_LOW>;
-      		reset-gpios-duration = <1>;
-      		four-byte-opcodes;
-      		status = "okay";
+	mx25uw25645: xspi-nor-flash@0 {
+		compatible = "st,stm32-xspi-nor";
+		reg = <0>;
+		size = <DT_SIZE_M(256)>; /* 256 Mbits */
+		ospi-max-frequency = <DT_FREQ_M(50)>;
+		spi-bus-width = <XSPI_OCTO_MODE>;
+		data-rate = <XSPI_DTR_TRANSFER>;
+		reset-gpios = <&m2mem_ldo_en M2MEM_CONNECTOR_GPIO_LDO_EN GPIO_ACTIVE_LOW>;
+		reset-gpios-duration = <1>;
+		four-byte-opcodes;
+		status = "okay";
 
-      		#address-cells = <1>;
-      		#size-cells = <1>;
-      		ranges = <0x0 0x90000000 DT_SIZE_M(32)>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x90000000 DT_SIZE_M(32)>;
 
-      		m2mem_flash0: flash@0 {
-      			compatible = "soc-nv-flash";
-      			reg = <0x0 DT_SIZE_M(32)>;
-      			erase-block-size = <DT_SIZE_K(4)>;
-      			write-block-size = <1>;
-      		};
-      	};
-      };
-    ```
+		m2mem_flash0: flash@0 {
+			compatible = "soc-nv-flash";
+			reg = <0x0 DT_SIZE_M(32)>;
+			erase-block-size = <DT_SIZE_K(4)>;
+			write-block-size = <1>;
+		};
+	};
+};
+```
 
 ### 5. Legacy STM32 XSPI driver JEDEC ID fix
 Commit: [*drivers: flash: stm32_xspi: guard jedec_id init with JESD216_API*](https://github.com/zephyrproject-rtos/zephyr/pull/109004/changes/80550a04acc97ff40b889d69d3ad80941f596536)
@@ -420,3 +420,99 @@ To build the sample for a specific variant (e.g. mb1927_33ba), pass the matching
 ```shell
 west build -b nucleo_u3c5zi_q samples/drivers/mspi/mspi_flash --shield b_m2mem_pack1_mb1927_33ba
 ```
+
+
+## Hardware tests
+
+The PR was merged with build coverage only, because the shield cards had not arrived yet. Once they did, running `mspi_flash` on real hardware revealed a few problems that no build could catch. They were fixed in follow-up PRs.
+
+### RDID returned zeros
+PR: [#116855](https://github.com/zephyrproject-rtos/zephyr/pull/116855)
+
+The first test, on the MB1928-33LB card (Winbond W25Q16JV), failed right at init:
+
+```
+<err> flash_mspi_nor: JEDEC ID mismatch, read: 00 00 00, expected: ef 40 15
+mspi-nor-flash@0: device not ready.
+```
+
+The STM32 XSPI MSPI driver sent an address phase with every command except Write Enable, including Read JEDEC ID (`0x9F`). I replaced the opcode-specific special case with a general rule:
+
+*drivers/mspi/mspi_stm32_xspi.c*
+```diff
+ 
+-	if ((cmd.Instruction == MSPI_NOR_CMD_WREN) || (cmd.Instruction == MSPI_NOR_OCMD_WREN)) {
+-		/* Write Enable only accepts HAL_XSPI_ADDRESS_NONE */
++	if (dev_data->ctx.xfer.addr_length == 0) {
++		/* Commands without an address phase, e.g. RDID or WREN */
+ 		cmd.AddressMode = HAL_XSPI_ADDRESS_NONE;
+ 	}
+```
+
+The OSPI and QSPI variants of the driver had the same special case, so the PR applies the same fix to them as well.
+
+
+### A reset that wasn't a reset
+PR: [#116862](https://github.com/zephyrproject-rtos/zephyr/pull/116862)
+
+The memory on each card is powered through an LDO whose enable pin is wired to the M.2 connector, and the devicetree describes that pin as the memory's `reset-gpios`. A reset is therefore a power cycle. Without a pulse length, the driver switched the regulator off and on in the same instant, and the memory never noticed.
+
+This broke the octal cards. The firmware switches the memory into OPI mode at boot. After an MCU reset, the memory was still in OPI, the firmware talked single-line SPI to it, and nothing answered. The only way out was to unplug the board. The fix gives the rail time to actually collapse:
+
+```dts
+t-reset-pulse = <5000000>;
+t-reset-recovery = <10000000>;
+```
+
+### Values read from the hardware
+PR: [#116862](https://github.com/zephyrproject-rtos/zephyr/pull/116862)
+
+- **MX25UW25645G (`mb1927_18ba`)**: the datasheet isn't public, so the `jedec-id` and `rx-dummy` were left as `TODO`. The memory reports `c2 81 39`. The dummy cycle count turned out not to belong in devicetree at all: the `mxicy,mx25u` quirk reads it from the memory's configuration register 2, so the property was dropped.
+- **IS25LP032D (`mb1928_33la`)**: the JEDEC ID read fine, but every read-back returned `0x88`. This memory ships with its Quad Enable bit cleared, so it ignores the quad read and program commands. The SFDP reports the QE requirement, which maps to `quad-enable-requirements = "S1B6"`.
+
+### Shield sample and devicetree fixes
+PR: [#118259](https://github.com/zephyrproject-rtos/zephyr/pull/118259)
+
+While writing a dedicated shield sample, I found two more devicetree mistakes:
+- The LEDs had inverted active states.
+- The ID EEPROM address was `0x57` instead of `0x51`, which `i2c scan m2mem_i2c` in the Zephyr shell showed right away.
+
+The sample reads the card info from the ID EEPROM and checks that it matches the `jedec-id` in devicetree, which catches a build for the wrong variant. Then it runs an erase/write test and shows the result on the shield LEDs.
+
+### Results
+
+- `samples/drivers/mspi/mspi_flash` on `nucleo_u3c5zi_q`, single and multi-sector erase, write and read-back:
+
+| Shield variant | Memory | Bus mode | Result |
+|---|---|---|---|
+| `b_m2mem_pack1_mb1927_18ba` | Macronix MX25UW25645G | Octal STR | pass |
+| `b_m2mem_pack1_mb1927_33ba` | Macronix MX25LM51245G | Octal STR | pass |
+| `b_m2mem_pack1_mb1928_33la` | ISSI IS25LP032D | Quad STR | pass |
+| `b_m2mem_pack1_mb1928_33lb` | Winbond W25Q16JV | Quad STR | pass |
+
+
+
+- `samples/shields/b_m2mem_pack1` on `nucleo_u3c5zi_q`, card info and JEDEC ID check from the ID EEPROM, erase, write and read-back, with results on the console and the card LEDs:
+
+<p align="center">
+  <img src=".docs/m2mem_sample.gif" alt="The B_M2MEM_PACK1 shield sample running on NUCLEO-U3C5ZI-Q: serial console with test results above, the board with the M.2 card and its status LEDs below." width="360">
+  <br>
+  <em>The shield sample running on NUCLEO-U3C5ZI-Q: test results on the serial console and on the card LEDs.</em>
+</p>
+
+## Where this led
+
+When I first noticed the M.2 slot on the bottom of the board, I expected a small shield PR. It ended up being something bigger: one of the first STM32 platforms in Zephyr to describe its external memory controller as an MSPI controller in the SoC devicetree itself, not only in a sample overlay. As far as I know, it was also the first to exercise the STM32 MSPI stack on real hardware across multiple flash memories at once: four memories from three vendors (Macronix, ISSI, Winbond), in both quad and octal mode, all from one board.
+
+That combination turned the shield into a test bench. Each card stresses the driver in a different way, and the bugs it found were not shield bugs. The missing address-phase rule from [#116855](https://github.com/zephyrproject-rtos/zephyr/pull/116855) affected the XSPI, OSPI and QSPI drivers alike, so every STM32 board using MSPI benefits from it, not just this one.
+
+It was also the starting point for the work that followed:
+
+- **Porting the XSPI MSPI driver to STM32Cube2 (HAL2)** ([#112951](https://github.com/zephyrproject-rtos/zephyr/pull/112951)). Newer series such as the STM32C5 ship only with HAL2, which renames the XSPI types, fields and constants and changes several call signatures, so the existing driver could not even compile there. Without this port, the C5 board would have had an M.2 slot and nothing to drive it.
+- **A second host board, built on top of that port.** With the driver running on HAL2, the Nucleo-C5A3ZG got its own `m2_memory_connector.dtsi` exporting the same `m2mem_xspi`, `m2mem_i2c` and `m2mem_ldo_en` labels ([#112731](https://github.com/zephyrproject-rtos/zephyr/pull/112731)). The shield overlays worked on it **without a single change**, which is exactly what removing the hardcoded `ranges` was supposed to make possible.
+- **Migration of all STM32 series to MSPI.** [@FRASTM](https://github.com/FRASTM) later opened [#116148](https://github.com/zephyrproject-rtos/zephyr/issues/116148) to move every STM32 series from the legacy QSPI, OSPI and XSPI flash drivers to MSPI. The STM32U3 was already there, since this PR had converted its XSPI node, and I kept contributing to the effort with board migrations and the driver fixes they uncovered.
+
+The C5 bring-up and the HAL2 port are a story of their own, and they deserve their own post.
+
+---
+A big thanks to [@FRASTM](https://github.com/FRASTM), [@erwango](https://github.com/erwango) and [@kartben](https://github.com/kartben) for the reviews and guidance. Their reviews shaped most of this work, and the move to MSPI was one of their suggestions, which ended up defining the next few months of my open-source contributions.
